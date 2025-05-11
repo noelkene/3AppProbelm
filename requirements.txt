@@ -1,0 +1,7 @@
+# requirements.txt
+streamlit>=1.32.0
+google-cloud-storage>=2.14.0
+vertexai>=1.71.1
+google-genai>=1.13.0
+PyMuPDF>=1.23.8
+python-dotenv>=1.0.1

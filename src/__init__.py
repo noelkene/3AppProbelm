@@ -1,0 +1,1 @@
+"""Manga Storyboard Generator package."""
