@@ -12,7 +12,9 @@ import asyncio
 
 from config.settings import (
     DEFAULT_NUM_PANELS, MAX_PANELS, MIN_PANELS,
-    VARIANT_COUNT, FINAL_VARIANT_COUNT
+    VARIANT_COUNT, FINAL_VARIANT_COUNT,
+    DEFAULT_IMAGE_TEMPERATURE, MAX_IMAGE_TEMPERATURE, MIN_IMAGE_TEMPERATURE,
+    ADDITIONAL_INSTRUCTION_TEXT
 )
 from models.project import Project, Character, Background, Panel, PanelVariant, ProjectJSONEncoder
 from services.ai_service import AIService
@@ -188,6 +190,15 @@ def render_panel_editor(panel: Panel):
     # Image generation section
     st.subheader("🎨 Image Generation")
     
+    # Add temperature control
+    temperature = st.slider(
+        "Generation Temperature",
+        MIN_IMAGE_TEMPERATURE,
+        MAX_IMAGE_TEMPERATURE,
+        DEFAULT_IMAGE_TEMPERATURE,
+        help="Higher values create more varied results, lower values are more consistent"
+    )
+    
     if not panel.variants:
         if st.button("✨ Generate Panel Image", key=f"generate_image_{panel.index}"):
             with st.spinner("Generating panel image..."):
@@ -196,7 +207,8 @@ def render_panel_editor(panel: Panel):
                     character_refs,
                     background_refs,
                     VARIANT_COUNT,
-                    "Generate manga panel variants"
+                    "Generate manga panel variants",
+                    temperature=temperature
                 )
                 
                 panel.variants = []
@@ -219,6 +231,36 @@ def render_panel_editor(panel: Panel):
     else:
         st.success("Panel variants generated! Please select your preferred version.")
         
+        # Add regenerate button
+        if st.button("🔄 Regenerate Panel", key=f"regenerate_{panel.index}"):
+            with st.spinner("Regenerating panel image..."):
+                variants = ai_service.generate_panel_variants(
+                    panel.description,
+                    character_refs,
+                    background_refs,
+                    VARIANT_COUNT,
+                    "Generate manga panel variants",
+                    temperature=temperature
+                )
+                
+                panel.variants = []
+                for i, (image_bytes, prompt) in enumerate(variants):
+                    gcs_uri = storage_service.save_image(
+                        image_bytes,
+                        st.session_state.current_project.project_dir.name,
+                        panel.index,
+                        "initial",
+                        i
+                    )
+                    if gcs_uri:
+                        panel.variants.append(PanelVariant(
+                            image_uri=gcs_uri,
+                            generation_prompt=prompt
+                        ))
+                
+                save_project(st.session_state.current_project)
+                st.rerun()
+        
         # Display all variants in a grid
         cols = st.columns(3)
         for i, variant in enumerate(panel.variants):
@@ -236,6 +278,13 @@ def render_panel_editor(panel: Panel):
         if panel.selected_variant:
             st.success(f"Selected Variant {panel.variants.index(panel.selected_variant) + 1}")
             
+            # Add additional instruction text for final variants
+            additional_instructions = st.text_area(
+                "Additional Instructions for Final Variants",
+                value=ADDITIONAL_INSTRUCTION_TEXT,
+                help="Add any specific instructions or modifications for the final variant generation"
+            )
+            
             if not panel.final_variants:
                 if st.button("✨ Generate Final Variants", key=f"generate_final_{panel.index}"):
                     with st.spinner("Generating final variants..."):
@@ -247,7 +296,9 @@ def render_panel_editor(panel: Panel):
                                 (selected_image_bytes, panel.selected_variant.generation_prompt),
                                 character_refs,
                                 background_refs,
-                                FINAL_VARIANT_COUNT
+                                FINAL_VARIANT_COUNT,
+                                temperature=temperature,
+                                additional_instructions=additional_instructions
                             )
                             
                             panel.final_variants = []

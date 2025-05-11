@@ -26,6 +26,12 @@ GCS_BUCKET_NAME = "comic_book_heros_and_villans"
 MULTIMODAL_MODEL_ID = "gemini-2.0-flash-preview-image-generation"
 TEXT_MODEL_ID = "gemini-2.5-pro-preview-05-06"
 
+# Image Generation settings
+DEFAULT_IMAGE_TEMPERATURE = 0.7
+MIN_IMAGE_TEMPERATURE = 0.0
+MAX_IMAGE_TEMPERATURE = 2.0
+ADDITIONAL_INSTRUCTION_TEXT = ""  # Can be modified during generation
+
 # Application settings
 DEFAULT_NUM_PANELS = 10
 MAX_PANELS = 100

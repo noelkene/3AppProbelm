@@ -288,7 +288,9 @@ class AIService:
                                           character_references: List[Tuple[str, str]],
                                           background_references: List[Tuple[str, str]],
                                           num_variants: int,
-                                          system_prompt: str) -> List[Tuple[bytes, str]]:
+                                          system_prompt: str,
+                                          temperature: float = 0.7,
+                                          additional_instructions: str = "") -> List[Tuple[bytes, str]]:
         """Generate multiple variants of a panel image asynchronously."""
         current_request_parts = []
         max_retries = 3
@@ -319,6 +321,10 @@ class AIService:
         # Add the panel description
         current_request_parts.append(types.Part.from_text(text=panel_description))
         
+        # Add additional instructions if provided
+        if additional_instructions:
+            current_request_parts.append(types.Part.from_text(text=f"\nAdditional Instructions:\n{additional_instructions}"))
+        
         async def generate_single_variant():
             """Generate a single variant with retry logic."""
             for attempt in range(max_retries):
@@ -329,7 +335,7 @@ class AIService:
                             model=MULTIMODAL_MODEL_ID,
                             contents=[types.Content(role="user", parts=current_request_parts)],
                             config=types.GenerateContentConfig(
-                                temperature=0.7,
+                                temperature=temperature,
                                 top_p=0.95,
                                 max_output_tokens=8192,
                                 response_modalities=["TEXT", "IMAGE"],
@@ -399,7 +405,9 @@ class AIService:
                                           selected_variant: Tuple[bytes, str],
                                           character_references: List[Tuple[str, str]],
                                           background_references: List[Tuple[str, str]],
-                                          num_variants: int) -> List[Tuple[bytes, str]]:
+                                          num_variants: int,
+                                          temperature: float = 0.7,
+                                          additional_instructions: str = "") -> List[Tuple[bytes, str]]:
         """Generate final variants of a panel image asynchronously."""
         current_request_parts = []
         max_retries = 3
@@ -439,6 +447,10 @@ class AIService:
         # Add the panel description
         current_request_parts.append(types.Part.from_text(text=panel_description))
         
+        # Add additional instructions if provided
+        if additional_instructions:
+            current_request_parts.append(types.Part.from_text(text=f"\nAdditional Instructions:\n{additional_instructions}"))
+        
         async def generate_single_variant():
             """Generate a single variant with retry logic."""
             for attempt in range(max_retries):
@@ -449,7 +461,7 @@ class AIService:
                             model=MULTIMODAL_MODEL_ID,
                             contents=[types.Content(role="user", parts=current_request_parts)],
                             config=types.GenerateContentConfig(
-                                temperature=0.7,
+                                temperature=temperature,
                                 top_p=0.95,
                                 max_output_tokens=8192,
                                 response_modalities=["TEXT", "IMAGE"],
