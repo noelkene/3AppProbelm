@@ -28,7 +28,7 @@ TEXT_MODEL_ID = "gemini-2.5-pro-preview-05-06"
 
 # Application settings
 DEFAULT_NUM_PANELS = 10
-MAX_PANELS = 40
+MAX_PANELS = 100
 MIN_PANELS = 5
 VARIANT_COUNT = 4  # Number of variants to generate per panel
 FINAL_VARIANT_COUNT = 4  # Number of final variants to generate from best variant
