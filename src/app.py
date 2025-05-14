@@ -120,6 +120,17 @@ def render_sidebar():
                 print(f"Full traceback: {traceback.format_exc()}")
                 st.error(f"Error adding character: {str(e)}")
         
+        # Display saved characters
+        if st.session_state.current_project and st.session_state.current_project.characters:
+            st.subheader("📋 Saved Characters")
+            for char_name, character in st.session_state.current_project.characters.items():
+                with st.expander(f"👤 {char_name}"):
+                    st.write(f"**Description:** {character.description}")
+                    if character.reference_images:
+                        image_bytes = storage_service.get_image(character.reference_images[0])
+                        if image_bytes:
+                            st.image(image_bytes, width=150)
+        
         # Background management
         st.subheader("🎭 Backgrounds")
         bg_name = st.text_input("Background Name")
