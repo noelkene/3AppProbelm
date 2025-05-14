@@ -167,8 +167,10 @@ def render_sidebar():
             "Number of Panels",
             MIN_PANELS,
             MAX_PANELS,
-            DEFAULT_NUM_PANELS
+            DEFAULT_NUM_PANELS,
+            key="num_panels"
         )
+        st.session_state.num_panels = num_panels
         
         st.info(f"Current Date (Server): {datetime.datetime.now().date()}")
 
@@ -494,11 +496,14 @@ def render_main_content():
                             )
                             print(f"Background context length: {len(background_context)} characters")
                             
-                            print("Generating panel descriptions...")
+                            # Get the number of panels from the slider in the sidebar
+                            num_panels = st.session_state.get('num_panels', DEFAULT_NUM_PANELS)
+                            print(f"Generating {num_panels} panel descriptions...")
+                            
                             descriptions = ai_service.generate_panel_descriptions(
                                 project.source_text,
                                 "Generate manga panel descriptions",
-                                DEFAULT_NUM_PANELS,
+                                num_panels,
                                 character_context,
                                 background_context
                             )
