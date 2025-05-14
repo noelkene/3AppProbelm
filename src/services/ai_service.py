@@ -15,6 +15,7 @@ class AIService:
     
     def __init__(self):
         """Initialize the AI service."""
+        print("Initializing AI service...")
         try:
             # Get default credentials for Vertex AI
             credentials, project = default()
@@ -31,18 +32,14 @@ class AIService:
             
             # Configure safety settings
             self.safety_settings = [
-                types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", 
-                                  threshold="OFF"),
-                types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", 
-                                  threshold="OFF"),
-                types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", 
-                                  threshold="OFF"),
-                types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", 
-                                  threshold="OFF"),
+                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
+                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
             ]
             
             # Create a thread pool for parallel operations
-            self.executor = ThreadPoolExecutor(max_workers=10)
+            self.executor = ThreadPoolExecutor(max_workers=3)
             
         except Exception as e:
             error_msg = str(e)
@@ -62,6 +59,27 @@ class AIService:
                 )
             else:
                 raise ValueError(f"Failed to initialize AI client: {error_msg}")
+
+    def _extract_character_names(self, panel_description: str) -> List[str]:
+        """Extract character names mentioned in the panel description."""
+        # Convert to lowercase for case-insensitive matching
+        desc_lower = panel_description.lower()
+        
+        # Common words to exclude
+        exclude_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'with', 'by', 'from'}
+        
+        # Split into words and clean
+        words = [word.strip('.,!?()[]{}":;') for word in desc_lower.split()]
+        words = [word for word in words if word and word not in exclude_words]
+        
+        # Look for character names (words that start with capital letters in the original text)
+        character_names = []
+        for word in panel_description.split():
+            clean_word = word.strip('.,!?()[]{}":;')
+            if clean_word and clean_word[0].isupper() and clean_word.lower() not in exclude_words:
+                character_names.append(clean_word)
+        
+        return list(set(character_names))  # Remove duplicates
 
     def generate_panel_descriptions(self, 
                                   chapter_text: str, 
@@ -290,14 +308,26 @@ class AIService:
                                           num_variants: int,
                                           system_prompt: str,
                                           temperature: float = 0.7,
-                                          additional_instructions: str = "") -> List[Tuple[bytes, str]]:
+                                          additional_instructions: str = "",
+                                          previous_panel_image: Optional[Tuple[bytes, str]] = None) -> List[Tuple[bytes, str]]:
         """Generate multiple variants of a panel image asynchronously."""
         current_request_parts = []
         max_retries = 3
         retry_delay = 1  # seconds
         
+        # Extract character names from the panel description
+        mentioned_characters = self._extract_character_names(panel_description)
+        print(f"Characters mentioned in panel: {mentioned_characters}")
+        
+        # Filter character references to only include mentioned characters
+        relevant_char_refs = [
+            (char_name, char_uri) for char_name, char_uri in character_references
+            if any(mentioned_char.lower() in char_name.lower() for mentioned_char in mentioned_characters)
+        ]
+        print(f"Relevant character references: {[name for name, _ in relevant_char_refs]}")
+        
         # Add character references
-        for char_name, char_uri in character_references:
+        for char_name, char_uri in relevant_char_refs:
             char_context = (
                 f"IMPORTANT CONTEXT: A visual reference for the character '{char_name}' "
                 f"is provided below. If this character is part of the current panel description, "
@@ -306,7 +336,7 @@ class AIService:
             )
             current_request_parts.append(types.Part.from_text(text=char_context))
             current_request_parts.append(types.Part.from_uri(file_uri=char_uri, mime_type="image/png"))
-            
+        
         # Add background references
         for bg_name, bg_uri in background_references:
             bg_context = (
@@ -317,7 +347,22 @@ class AIService:
             )
             current_request_parts.append(types.Part.from_text(text=bg_context))
             current_request_parts.append(types.Part.from_uri(file_uri=bg_uri, mime_type="image/png"))
-            
+        
+        # Add previous panel image if available
+        if previous_panel_image:
+            prev_image, prev_text = previous_panel_image
+            current_request_parts.append(types.Part.from_text(text=(
+                "IMPORTANT CONTEXT: The previous panel in the sequence is provided below. "
+                "Maintain visual continuity with this panel, including character appearances, "
+                "art style, and scene progression. The new panel should feel like a natural "
+                "continuation of the story."
+            )))
+            current_request_parts.append(types.Part(inline_data=types.Blob(
+                data=prev_image,
+                mime_type="image/png"
+            )))
+            current_request_parts.append(types.Part.from_text(text=f"Previous Panel Context: {prev_text}"))
+        
         # Add the panel description
         current_request_parts.append(types.Part.from_text(text=panel_description))
         

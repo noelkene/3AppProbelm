@@ -241,6 +241,15 @@ def render_panel_editor(panel: Panel):
         help="Higher values create more varied results, lower values are more consistent"
     )
     
+    # Get previous panel's image if available
+    previous_panel_image = None
+    if panel.index > 0:
+        prev_panel = st.session_state.current_project.panels[panel.index - 1]
+        if prev_panel.final_variant:
+            prev_image_bytes = storage_service.get_image(prev_panel.final_variant.image_uri)
+            if prev_image_bytes:
+                previous_panel_image = (prev_image_bytes, prev_panel.final_variant.generation_prompt)
+    
     if not panel.variants:
         if st.button("✨ Generate Panel Image", key=f"generate_image_{panel.index}"):
             with st.spinner("Generating panel image..."):
@@ -250,7 +259,8 @@ def render_panel_editor(panel: Panel):
                     background_refs,
                     VARIANT_COUNT,
                     "Generate manga panel variants",
-                    temperature=temperature
+                    temperature=temperature,
+                    previous_panel_image=previous_panel_image
                 )
                 
                 panel.variants = []
@@ -282,7 +292,8 @@ def render_panel_editor(panel: Panel):
                     background_refs,
                     VARIANT_COUNT,
                     "Generate manga panel variants",
-                    temperature=temperature
+                    temperature=temperature,
+                    previous_panel_image=previous_panel_image
                 )
                 
                 panel.variants = []
