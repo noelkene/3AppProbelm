@@ -68,6 +68,9 @@ def render_sidebar():
     with st.sidebar:
         st.header("⚙️ Project Controls")
         
+        # Add link to preview page
+        st.markdown("[📚 View Comic Preview](Comic_Preview)")
+        
         # Project selection/creation
         col1, col2 = st.columns(2)
         with col1:
