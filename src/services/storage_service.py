@@ -70,37 +70,21 @@ class StorageService:
     
     @retry.Retry(predicate=retry.if_exception_type(Exception))
     def save_project_file(self, project_id: str, filename: str, content: bytes, content_type: str) -> str:
-        """Save a project file to GCS."""
+        """Save a project file to GCS (only upload metadata.json, no timestamped versions)."""
         try:
             if not content:
                 raise ValueError("Empty content provided")
-            
-            # Generate a timestamped path
-            base_path = self._generate_timestamped_path(project_id, "project_file")
-            blob_name = f"{base_path}_{filename}"
-            
+            # Only upload to the canonical path
+            blob_name = f"projects/{project_id}/{filename}"
+            print(f"[DEBUG] Attempting to upload {filename} to GCS at: {blob_name}")
             blob = self.bucket.blob(blob_name)
             blob.upload_from_string(content, content_type=content_type)
-            
-            # Save the metadata
-            metadata_name = f"{base_path}_{filename}_metadata.json"
-            metadata_blob = self.bucket.blob(metadata_name)
-            metadata = {
-                "timestamp": datetime.now().isoformat(),
-                "filename": filename,
-                "content_type": content_type,
-                "file_uri": f"gs://{GCS_BUCKET_NAME}/{blob_name}"
-            }
-            metadata_blob.upload_from_string(
-                json.dumps(metadata, indent=2),
-                content_type="application/json"
-            )
-            
+            print(f"[DEBUG] Successfully uploaded {filename} to GCS at: {blob_name}")
             return f"gs://{GCS_BUCKET_NAME}/{blob_name}"
-            
         except Exception as e:
-            print(f"Error saving project file: {str(e)}")
-            print(f"Full traceback: {traceback.format_exc()}")
+            print(f"[ERROR] Failed to upload {filename} to GCS at: {blob_name}")
+            print(f"[ERROR] Exception: {str(e)}")
+            print(f"[ERROR] Full traceback: {traceback.format_exc()}")
             raise
     
     @retry.Retry(predicate=retry.if_exception_type(Exception))
@@ -198,25 +182,14 @@ class StorageService:
     
     @retry.Retry(predicate=retry.if_exception_type(Exception))
     def get_project_file(self, project_id: str, filename: str) -> bytes:
-        """Get a project file from GCS."""
+        """Get a project file from GCS (only look for metadata.json in canonical path)."""
         try:
-            # List all files in the project directory
-            prefix = f"projects/{project_id}/"
-            blobs = self.bucket.list_blobs(prefix=prefix)
-            
-            # Find the most recent file matching the filename
-            matching_blobs = []
-            for blob in blobs:
-                if filename in blob.name and not blob.name.endswith("_metadata.json"):
-                    matching_blobs.append(blob)
-            
-            if not matching_blobs:
+            blob_name = f"projects/{project_id}/{filename}"
+            blob = self.bucket.blob(blob_name)
+            if not blob.exists():
+                print(f"[DEBUG] {filename} not found at {blob_name}")
                 return None
-            
-            # Sort by timestamp in the filename
-            latest_blob = sorted(matching_blobs, key=lambda x: x.name.split("_")[-1], reverse=True)[0]
-            return latest_blob.download_as_bytes()
-            
+            return blob.download_as_bytes()
         except Exception as e:
             print(f"Error getting project file: {str(e)}")
             print(f"Full traceback: {traceback.format_exc()}")
@@ -224,18 +197,19 @@ class StorageService:
 
     @retry.Retry(predicate=retry.if_exception_type(Exception))
     def list_projects(self) -> list:
-        """List all saved projects."""
+        """List all saved projects (only look for metadata.json in each project folder)."""
         try:
             # List all project directories
             prefix = "projects/"
-            blobs = self.bucket.list_blobs(prefix=prefix, delimiter="/")
-            
-            # Get all project IDs
+            blobs = self.bucket.list_blobs(prefix=prefix, delimiter=None)
+            # Find all metadata.json files
             project_ids = set()
-            for prefix in blobs.prefixes:
-                project_id = prefix.split("/")[1]
-                project_ids.add(project_id)
-            
+            for blob in blobs:
+                if blob.name.endswith("/metadata.json"):
+                    # Extract project_id from path
+                    parts = blob.name.split("/")
+                    if len(parts) >= 3:
+                        project_ids.add(parts[1])
             # Get project metadata for each project
             projects = []
             for project_id in project_ids:
@@ -252,10 +226,8 @@ class StorageService:
                 except Exception as e:
                     print(f"Error getting metadata for project {project_id}: {str(e)}")
                     continue
-            
             # Sort projects by last modified date
             return sorted(projects, key=lambda x: x.get("last_modified", ""), reverse=True)
-            
         except Exception as e:
             print(f"Error listing projects: {str(e)}")
             print(f"Full traceback: {traceback.format_exc()}")

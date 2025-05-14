@@ -17,7 +17,7 @@ def load_project(project_id: str) -> Project:
     try:
         project_data = storage_service.get_project_file(project_id, "metadata.json")
         if project_data:
-            project = Project.load(json.loads(project_data))
+            project = Project.from_dict(json.loads(project_data))
             project.project_dir = Path(f"projects/{project_id}")
             return project
     except Exception as e:

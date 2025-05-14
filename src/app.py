@@ -43,7 +43,7 @@ def load_project(project_id: str) -> Optional[Project]:
     try:
         project_data = storage_service.get_project_file(project_id, "metadata.json")
         if project_data:
-            project = Project.load(json.loads(project_data))
+            project = Project.from_dict(json.loads(project_data))
             project.project_dir = Path(f"projects/{project_id}")
             return project
     except Exception as e:
@@ -53,15 +53,36 @@ def load_project(project_id: str) -> Optional[Project]:
 def save_project(project: Project):
     """Save a project to GCS."""
     try:
+        # Update timestamps
+        project.updated_at = datetime.datetime.now()
+        # Save metadata locally
         metadata = project.save()
+        # Read the just-saved local metadata.json
+        metadata_path = project.project_dir / "metadata.json"
+        with open(metadata_path, "rb") as f:
+            metadata_bytes = f.read()
+        # Upload metadata.json to GCS
         storage_service.save_project_file(
             project.project_dir.name,
             "metadata.json",
-            json.dumps(metadata, cls=ProjectJSONEncoder).encode(),
+            metadata_bytes,
             "application/json"
         )
+        # Save source text if it exists
+        if project.source_text:
+            storage_service.save_project_file(
+                project.project_dir.name,
+                "source.txt",
+                project.source_text.encode(),
+                "text/plain"
+            )
+        print(f"Project '{project.name}' saved successfully")
+        return True
     except Exception as e:
+        print(f"Error saving project: {str(e)}")
+        print(f"Full traceback: {traceback.format_exc()}")
         st.error(f"Error saving project: {str(e)}")
+        return False
 
 def render_sidebar():
     """Render the sidebar with project controls and settings."""
@@ -79,31 +100,39 @@ def render_sidebar():
                 st.rerun()
         
         # List and select existing projects
-        if st.session_state.current_project is None:
-            st.subheader("📚 Load Project")
-            try:
-                # Get list of projects from storage
-                project_list = storage_service.list_projects()
-                if project_list:
-                    project_names = {p['name']: p['id'] for p in project_list}
-                    selected_project = st.selectbox(
-                        "Select a project to load",
-                        options=list(project_names.keys()),
-                        key="project_selector"
-                    )
-                    
-                    if selected_project and st.button("Load Selected Project"):
-                        project = load_project(project_names[selected_project])
-                        if project:
-                            st.session_state.current_project = project
-                            st.success(f"Loaded project: {project.name}")
-                            st.rerun()
-                        else:
-                            st.error("Failed to load project")
-                else:
-                    st.info("No saved projects found")
-            except Exception as e:
-                st.error(f"Error loading projects: {str(e)}")
+        st.subheader("📚 Projects")
+        try:
+            project_list = storage_service.list_projects()
+            if project_list:
+                project_names = {p['name']: p['id'] for p in project_list}
+                selected_project = st.selectbox(
+                    "Select a project to load",
+                    options=list(project_names.keys()),
+                    key="project_selector"
+                )
+                
+                if selected_project and st.button("Load Selected Project"):
+                    project = load_project(project_names[selected_project])
+                    if project:
+                        st.session_state.current_project = project
+                        st.success(f"Loaded project: {project.name}")
+                        st.rerun()
+                    else:
+                        st.error("Failed to load project")
+            else:
+                st.info("No saved projects found")
+        except Exception as e:
+            st.error(f"Error loading projects: {str(e)}")
+        
+        # Save current project
+        if st.session_state.current_project:
+            st.subheader("💾 Save Project")
+            if st.button("Save Current Project"):
+                try:
+                    save_project(st.session_state.current_project)
+                    st.success(f"Project '{st.session_state.current_project.name}' saved successfully!")
+                except Exception as e:
+                    st.error(f"Error saving project: {str(e)}")
         
         # Character management
         st.subheader("🎨 Characters")
@@ -118,12 +147,10 @@ def render_sidebar():
                     print("Error: No active project")
                     st.error("Please create a project first")
                     return
-                
                 print("Reading image file...")
                 image_bytes = char_image.getvalue()
                 print(f"Image size: {len(image_bytes)} bytes")
                 print(f"Image type: {char_image.type}")
-                
                 print("Saving character reference to storage...")
                 gcs_uri = storage_service.save_character_reference(
                     st.session_state.current_project.project_dir.name,
@@ -131,7 +158,6 @@ def render_sidebar():
                     image_bytes,
                     char_image.type
                 )
-                
                 if gcs_uri:
                     print(f"Successfully saved image to: {gcs_uri}")
                     character = Character(
@@ -151,6 +177,44 @@ def render_sidebar():
                 print(f"Error adding character: {str(e)}")
                 print(f"Full traceback: {traceback.format_exc()}")
                 st.error(f"Error adding character: {str(e)}")
+        
+        # Import characters from another project
+        if st.session_state.current_project:
+            st.markdown("**Import Characters from Another Project**")
+            import_project_list = [p for p in project_list if p['id'] != st.session_state.current_project.project_dir.name]
+            if import_project_list:
+                import_project_names = {p['name']: p['id'] for p in import_project_list}
+                import_selected_project = st.selectbox(
+                    "Select project to import from",
+                    options=["None"] + list(import_project_names.keys()),
+                    key="import_char_project_selector"
+                )
+                if import_selected_project and import_selected_project != "None":
+                    import_project = load_project(import_project_names[import_selected_project])
+                    if import_project and import_project.characters:
+                        char_options = list(import_project.characters.keys())
+                        chars_to_import = st.multiselect(
+                            "Select characters to import",
+                            options=char_options,
+                            key="import_char_multiselect"
+                        )
+                        if chars_to_import and st.button("Import Selected Characters"):
+                            for cname in chars_to_import:
+                                c = import_project.characters[cname]
+                                # Copy reference images (URIs) and metadata
+                                st.session_state.current_project.characters[cname] = Character(
+                                    name=c.name,
+                                    description=c.description,
+                                    reference_images=list(c.reference_images),
+                                    style_notes=c.style_notes
+                                )
+                            save_project(st.session_state.current_project)
+                            st.success(f"Imported: {', '.join(chars_to_import)}")
+                            st.rerun()
+                    elif import_project:
+                        st.info("No characters found in selected project.")
+            else:
+                st.info("No other projects available for import.")
         
         # Display saved characters
         if st.session_state.current_project and st.session_state.current_project.characters:
@@ -173,7 +237,6 @@ def render_sidebar():
             if not st.session_state.current_project:
                 st.error("Please create a project first")
                 return
-                
             image_bytes = bg_image.getvalue()
             gcs_uri = storage_service.save_background_reference(
                 st.session_state.current_project.project_dir.name,
@@ -181,7 +244,6 @@ def render_sidebar():
                 image_bytes,
                 bg_image.type
             )
-            
             if gcs_uri:
                 background = Background(
                     name=bg_name,
@@ -193,16 +255,56 @@ def render_sidebar():
                 st.success(f"Added background: {bg_name}")
                 st.rerun()
         
+        # Import backgrounds from another project
+        if st.session_state.current_project:
+            st.markdown("**Import Backgrounds from Another Project**")
+            import_project_list = [p for p in project_list if p['id'] != st.session_state.current_project.project_dir.name]
+            if import_project_list:
+                import_project_names = {p['name']: p['id'] for p in import_project_list}
+                import_selected_project_bg = st.selectbox(
+                    "Select project to import from",
+                    options=["None"] + list(import_project_names.keys()),
+                    key="import_bg_project_selector"
+                )
+                if import_selected_project_bg and import_selected_project_bg != "None":
+                    import_project_bg = load_project(import_project_names[import_selected_project_bg])
+                    if import_project_bg and import_project_bg.backgrounds:
+                        bg_options = list(import_project_bg.backgrounds.keys())
+                        bgs_to_import = st.multiselect(
+                            "Select backgrounds to import",
+                            options=bg_options,
+                            key="import_bg_multiselect"
+                        )
+                        if bgs_to_import and st.button("Import Selected Backgrounds"):
+                            for bname in bgs_to_import:
+                                b = import_project_bg.backgrounds[bname]
+                                st.session_state.current_project.backgrounds[bname] = Background(
+                                    name=b.name,
+                                    description=b.description,
+                                    reference_image=b.reference_image,
+                                    style_notes=b.style_notes
+                                )
+                            save_project(st.session_state.current_project)
+                            st.success(f"Imported: {', '.join(bgs_to_import)}")
+                            st.rerun()
+                    elif import_project_bg:
+                        st.info("No backgrounds found in selected project.")
+            else:
+                st.info("No other projects available for import.")
+        
         # Project settings
         st.subheader("⚙️ Settings")
+        # Initialize num_panels in session state if not present
+        if 'num_panels' not in st.session_state:
+            st.session_state.num_panels = DEFAULT_NUM_PANELS
+            
         num_panels = st.slider(
             "Number of Panels",
             MIN_PANELS,
             MAX_PANELS,
-            DEFAULT_NUM_PANELS,
+            st.session_state.num_panels,
             key="num_panels"
         )
-        st.session_state.num_panels = num_panels
         
         st.info(f"Current Date (Server): {datetime.datetime.now().date()}")
 

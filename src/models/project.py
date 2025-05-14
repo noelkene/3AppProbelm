@@ -176,4 +176,67 @@ class Project:
         except Exception as e:
             print(f"Error loading project: {str(e)}")
             print(f"Full traceback: {traceback.format_exc()}")
+            raise
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Project':
+        """Reconstruct a Project from a dictionary (parsed JSON from GCS)."""
+        try:
+            # Parse characters
+            if isinstance(data.get("characters"), dict):
+                characters = {name: Character(**char) for name, char in data["characters"].items()}
+            else:
+                # fallback for list of dicts
+                characters = {char["name"]: Character(**char) for char in data.get("characters", [])}
+            # Parse backgrounds
+            if isinstance(data.get("backgrounds"), dict):
+                backgrounds = {name: Background(**bg) for name, bg in data["backgrounds"].items()}
+            else:
+                backgrounds = {bg["name"]: Background(**bg) for bg in data.get("backgrounds", [])}
+            # Parse panels
+            panels = []
+            for panel_data in data.get("panels", []):
+                variants = [PanelVariant(**v) for v in panel_data.get("variants", [])]
+                final_variants = [PanelVariant(**v) for v in panel_data.get("final_variants", [])]
+                selected_variant = None
+                for v in variants:
+                    if getattr(v, "selected", False):
+                        selected_variant = v
+                        break
+                panel = Panel(
+                    description=panel_data["description"],
+                    index=panel_data["index"],
+                    variants=variants,
+                    selected_variant=selected_variant,
+                    final_variants=final_variants,
+                    approved=panel_data.get("approved", panel_data.get("is_approved", False)),
+                    notes=panel_data.get("notes", "")
+                )
+                panels.append(panel)
+            # Parse timestamps
+            created_at = data.get("created_at")
+            if isinstance(created_at, str):
+                created_at = datetime.fromisoformat(created_at)
+            updated_at = data.get("updated_at")
+            if isinstance(updated_at, str):
+                updated_at = datetime.fromisoformat(updated_at)
+            # Project dir (optional)
+            project_dir = data.get("project_dir")
+            if project_dir and not isinstance(project_dir, Path):
+                project_dir = Path(str(project_dir))
+            return cls(
+                name=data["name"],
+                source_text=data.get("source_text", ""),
+                source_file=data.get("source_file", ""),
+                created_at=created_at or datetime.now(),
+                updated_at=updated_at or datetime.now(),
+                characters=characters,
+                backgrounds=backgrounds,
+                panels=panels,
+                status=data.get("status", "created"),
+                project_dir=project_dir
+            )
+        except Exception as e:
+            print(f"Error reconstructing Project from dict: {str(e)}")
+            print(f"Full traceback: {traceback.format_exc()}")
             raise 
