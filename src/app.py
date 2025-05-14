@@ -69,10 +69,39 @@ def render_sidebar():
         st.header("⚙️ Project Controls")
         
         # Project selection/creation
-        if st.button("New Project"):
-            st.session_state.current_project = None
-            st.rerun()
-            
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("New Project"):
+                st.session_state.current_project = None
+                st.rerun()
+        
+        # List and select existing projects
+        if st.session_state.current_project is None:
+            st.subheader("📚 Load Project")
+            try:
+                # Get list of projects from storage
+                project_list = storage_service.list_projects()
+                if project_list:
+                    project_names = {p['name']: p['id'] for p in project_list}
+                    selected_project = st.selectbox(
+                        "Select a project to load",
+                        options=list(project_names.keys()),
+                        key="project_selector"
+                    )
+                    
+                    if selected_project and st.button("Load Selected Project"):
+                        project = load_project(project_names[selected_project])
+                        if project:
+                            st.session_state.current_project = project
+                            st.success(f"Loaded project: {project.name}")
+                            st.rerun()
+                        else:
+                            st.error("Failed to load project")
+                else:
+                    st.info("No saved projects found")
+            except Exception as e:
+                st.error(f"Error loading projects: {str(e)}")
+        
         # Character management
         st.subheader("🎨 Characters")
         char_name = st.text_input("Character Name")

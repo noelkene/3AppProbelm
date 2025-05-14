@@ -220,4 +220,43 @@ class StorageService:
         except Exception as e:
             print(f"Error getting project file: {str(e)}")
             print(f"Full traceback: {traceback.format_exc()}")
+            raise
+
+    @retry.Retry(predicate=retry.if_exception_type(Exception))
+    def list_projects(self) -> list:
+        """List all saved projects."""
+        try:
+            # List all project directories
+            prefix = "projects/"
+            blobs = self.bucket.list_blobs(prefix=prefix, delimiter="/")
+            
+            # Get all project IDs
+            project_ids = set()
+            for prefix in blobs.prefixes:
+                project_id = prefix.split("/")[1]
+                project_ids.add(project_id)
+            
+            # Get project metadata for each project
+            projects = []
+            for project_id in project_ids:
+                try:
+                    metadata = self.get_project_file(project_id, "metadata.json")
+                    if metadata:
+                        project_data = json.loads(metadata)
+                        projects.append({
+                            "id": project_id,
+                            "name": project_data.get("name", "Unnamed Project"),
+                            "created_at": project_data.get("created_at", ""),
+                            "last_modified": project_data.get("last_modified", "")
+                        })
+                except Exception as e:
+                    print(f"Error getting metadata for project {project_id}: {str(e)}")
+                    continue
+            
+            # Sort projects by last modified date
+            return sorted(projects, key=lambda x: x.get("last_modified", ""), reverse=True)
+            
+        except Exception as e:
+            print(f"Error listing projects: {str(e)}")
+            print(f"Full traceback: {traceback.format_exc()}")
             raise 
