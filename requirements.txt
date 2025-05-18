@@ -1,7 +1,14 @@
 # requirements.txt
-streamlit>=1.32.0
-google-cloud-storage>=2.14.0
-vertexai>=1.71.1
-google-genai>=1.13.0
-PyMuPDF>=1.23.8
-python-dotenv>=1.0.1
+streamlit==1.32.0
+google-cloud-storage==2.14.0
+google-cloud-aiplatform==1.71.1
+google-cloud-core==2.4.1
+google-api-core==2.17.1
+google-auth==2.28.1
+vertexai==1.71.1
+google-genai==1.13.0
+PyMuPDF==1.23.8
+python-dotenv==1.0.1
+Pillow==10.2.0
+requests==2.31.0
+uuid==1.30

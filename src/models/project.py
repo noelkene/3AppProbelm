@@ -203,9 +203,31 @@ class Project:
                     if getattr(v, "selected", False):
                         selected_variant = v
                         break
+                
+                # Handle script data, new and old format
+                script_data = panel_data.get("script", {})
+                if not script_data and "description" in panel_data: # compatibility with old format
+                    script = PanelScript(
+                        visual_description=panel_data.get("description", ""),
+                        brief_description=script_data.get("brief_description", ""), # Will be empty for old format
+                        source_text=script_data.get("source_text", "") # Will be empty for old format
+                    )
+                else:
+                    script = PanelScript(
+                        visual_description=script_data.get("visual_description", panel_data.get("description","")),
+                        brief_description=script_data.get("brief_description", ""),
+                        source_text=script_data.get("source_text", ""),
+                        dialogue=script_data.get("dialogue", []),
+                        captions=script_data.get("captions", []),
+                        sfx=script_data.get("sfx", []),
+                        thoughts=script_data.get("thoughts", []),
+                        skip_enhancement=script_data.get("skip_enhancement", False)
+                    )
+
                 panel = Panel(
-                    description=panel_data["description"],
+                    # description field is deprecated from Panel, moved to PanelScript
                     index=panel_data["index"],
+                    script=script,
                     variants=variants,
                     selected_variant=selected_variant,
                     final_variants=final_variants,
@@ -240,3 +262,86 @@ class Project:
             print(f"Error reconstructing Project from dict: {str(e)}")
             print(f"Full traceback: {traceback.format_exc()}")
             raise 
+
+    def to_dict(self) -> dict:
+        """Convert project to a dictionary for serialization."""
+        result = {
+            "name": self.name,
+            "source_text": self.source_text,
+            "source_file": self.source_file,
+            "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
+            "updated_at": self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at,
+            "status": self.status,
+            "project_dir": str(self.project_dir) if self.project_dir else None,
+            "characters": {},
+            "backgrounds": {},
+            "panels": []
+        }
+        
+        # Convert characters
+        for name, char in self.characters.items():
+            result["characters"][name] = {
+                "name": char.name,
+                "description": char.description,
+                "reference_images": char.reference_images,
+                "style_notes": getattr(char, "style_notes", "")
+            }
+        
+        # Convert backgrounds
+        for name, bg in self.backgrounds.items():
+            result["backgrounds"][name] = {
+                "name": bg.name,
+                "description": bg.description,
+                "reference_image": bg.reference_image,
+                "style_notes": getattr(bg, "style_notes", "")
+            }
+        
+        # Convert panels
+        for panel in self.panels:
+            panel_dict = {
+                "index": panel.index,
+                "approved": getattr(panel, "approved", False),
+                "notes": getattr(panel, "notes", ""),
+                "variants": [],
+                "final_variants": []
+            }
+            
+            # Handle panel description/script
+            if hasattr(panel, "description"):
+                panel_dict["description"] = panel.description
+            
+            if hasattr(panel, "script"):
+                panel_dict["script"] = {
+                    "visual_description": panel.script.visual_description,
+                    "brief_description": getattr(panel.script, "brief_description", ""),
+                    "source_text": getattr(panel.script, "source_text", ""),
+                    "dialogue": panel.script.dialogue if hasattr(panel.script, "dialogue") else [],
+                    "captions": panel.script.captions if hasattr(panel.script, "captions") else [],
+                    "sfx": panel.script.sfx if hasattr(panel.script, "sfx") else [],
+                    "thoughts": panel.script.thoughts if hasattr(panel.script, "thoughts") else [],
+                    "skip_enhancement": getattr(panel.script, "skip_enhancement", False)
+                }
+            
+            # Convert variants
+            for variant in getattr(panel, "variants", []):
+                variant_dict = {
+                    "image_uri": variant.image_uri,
+                    "generation_prompt": variant.generation_prompt,
+                    "selected": getattr(variant, "selected", False),
+                    "feedback": getattr(variant, "feedback", None)
+                }
+                panel_dict["variants"].append(variant_dict)
+            
+            # Convert final variants
+            for variant in getattr(panel, "final_variants", []):
+                variant_dict = {
+                    "image_uri": variant.image_uri,
+                    "generation_prompt": variant.generation_prompt,
+                    "selected": getattr(variant, "selected", False),
+                    "feedback": getattr(variant, "feedback", None)
+                }
+                panel_dict["final_variants"].append(variant_dict)
+            
+            result["panels"].append(panel_dict)
+        
+        return result 
