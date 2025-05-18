@@ -53,8 +53,9 @@ else:
 
 # AI Model settings
 # Using models specified by the user
-MULTIMODAL_MODEL_ID = "gemini-2.5-pro-preview-05-06"  # For image generation
-TEXT_MODEL_ID = "gemini-2.5-pro-preview-05-06"  # For text generation
+# MULTIMODAL_MODEL_ID = "gemini-1.5-pro-latest"  # Example: Switched back by user's request
+MULTIMODAL_MODEL_ID = "gemini-2.0-flash-preview-image-generation" # User confirmed this is the intended model
+TEXT_MODEL_ID = "gemini-1.5-flash-preview-0514"  # For text generation
 
 # Image Generation settings
 DEFAULT_IMAGE_TEMPERATURE = 0.7

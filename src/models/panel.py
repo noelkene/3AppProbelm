@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Panel model for manga storyboard generation."""
 
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ class Panel:
     variants: List[PanelVariant] = field(default_factory=list)
     selected_variant: Optional[PanelVariant] = None
     final_variants: List[PanelVariant] = field(default_factory=list)
+    official_final_image_uri: Optional[str] = None
     approved: bool = False
     notes: str = ""
 

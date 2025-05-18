@@ -54,29 +54,37 @@ class StorageService:
                 raise ValueError("Empty image bytes provided")
             
             # Generate a timestamped path
-            base_path = self._generate_timestamped_path(project_id, f"panel_{panel_index:03d}_{variant_type}")
+            # Sanitize project_id for path if it might contain spaces or special chars (though ideally it's a clean ID)
+            # sanitized_project_id = self._sanitize_name_for_path(project_id) 
+            # Using project_id directly as it's expected to be an ID like a UUID or sanitized name
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            base_filename = f"panel_{panel_index:03d}_{variant_type}"
             if variant_index is not None:
-                base_path += f"_variant_{variant_index:03d}"
+                base_filename += f"_variant_{variant_index:03d}"
+            base_filename += f"_{timestamp}" # Add timestamp to base filename before extension
             
-            # Save the image
-            blob_name = f"{base_path}.png"
+            # Construct blob name within the project directory structure
+            blob_name = f"projects/{project_id}/images/{base_filename}.png"
+            
             blob = self.bucket.blob(blob_name)
             blob.upload_from_string(image_bytes, content_type="image/png")
             
-            # Save the metadata
-            metadata_name = f"{base_path}_metadata.json"
-            metadata_blob = self.bucket.blob(metadata_name)
-            metadata = {
-                "timestamp": datetime.now().isoformat(),
-                "panel_index": panel_index,
-                "variant_type": variant_type,
-                "variant_index": variant_index,
-                "image_uri": f"gs://{GCS_BUCKET_NAME}/{blob_name}"
-            }
-            metadata_blob.upload_from_string(
-                json.dumps(metadata, indent=2),
-                content_type="application/json"
-            )
+            # REMOVED the creation of individual metadata JSON files for each image variant
+            # The main project metadata.json now stores variant URIs and prompts.
+            # Example of removed section:
+            # metadata_name = f"projects/{project_id}/images/{base_filename}_metadata.json"
+            # metadata_blob = self.bucket.blob(metadata_name)
+            # metadata = {
+            #     "timestamp": datetime.now().isoformat(),
+            #     "panel_index": panel_index,
+            #     "variant_type": variant_type,
+            #     "variant_index": variant_index,
+            #     "image_uri": f"gs://{GCS_BUCKET_NAME}/{blob_name}"
+            # }
+            # metadata_blob.upload_from_string(
+            #     json.dumps(metadata, indent=2),
+            #     content_type="application/json"
+            # )
             
             gcs_uri = f"gs://{GCS_BUCKET_NAME}/{blob_name}"
             print(f"Saving image to GCS URI: {gcs_uri}")

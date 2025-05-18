@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Project model for manga storyboard generation."""
 
 from dataclasses import dataclass, field, asdict
@@ -6,6 +7,8 @@ from typing import Dict, List, Optional
 from pathlib import Path
 import json
 import traceback
+
+from src.models.panel import Panel, PanelVariant, PanelScript
 
 class ProjectJSONEncoder(json.JSONEncoder):
     """Custom JSON encoder for Project and related classes."""
@@ -33,25 +36,6 @@ class Background:
     description: str
     reference_image: str  # GCS URI
     style_notes: str = ""
-
-@dataclass
-class PanelVariant:
-    """A variant of a panel image."""
-    image_uri: str  # GCS URI
-    generation_prompt: str
-    selected: bool = False
-    feedback: Optional[str] = None
-
-@dataclass
-class Panel:
-    """A panel in the storyboard."""
-    description: str
-    index: int
-    variants: List[PanelVariant] = field(default_factory=list)
-    selected_variant: Optional[PanelVariant] = None
-    final_variants: List[PanelVariant] = field(default_factory=list)
-    approved: bool = False
-    notes: str = ""
 
 @dataclass
 class Project:
@@ -94,93 +78,40 @@ class Project:
     @classmethod
     def load(cls, project_dir: Path) -> 'Project':
         """Load project from disk."""
-        print(f"\n=== Loading Project from: {project_dir} ===")
+        print(f"\n=== Loading Project from local disk: {project_dir} ===")
         try:
-            print("Reading metadata file...")
-            with open(project_dir / "metadata.json", "r") as f:
+            metadata_path = project_dir / "metadata.json"
+            print(f"Reading metadata file: {metadata_path}")
+            with open(metadata_path, "r", encoding='utf-8') as f:
                 metadata = json.load(f)
             
-            print("Creating project instance...")
-            project = cls(
-                name=metadata["name"],
-                source_text="",  # Load from source file if needed
-                source_file=metadata["source_file"],
-                created_at=datetime.fromisoformat(metadata["created_at"]),
-                updated_at=datetime.fromisoformat(metadata["updated_at"]),
-                status=metadata["status"],
-                project_dir=project_dir
-            )
+            # For local disk loading, it's better to reuse from_dict logic
+            # after loading the dictionary from the file.
+            print("Reconstructing project using from_dict logic...")
+            # Add project_dir to metadata if it's not already there, as from_dict might use it.
+            # However, from_dict itself can derive it if passed as a separate argument or if it expects it.
+            # For simplicity, if from_dict is self-contained with the dict, this is enough.
+            # Let's assume `from_dict` can handle the `project_dir` if it's in the `data` dict or is smart about it.
+            # If `project_dir` is crucial for `from_dict` and not in `metadata`, it needs to be passed.
+            # The current `from_dict` in the latest version seems to get `project_dir` from the dict itself.
+            metadata['project_dir'] = str(project_dir) # Ensure project_dir is in the dict for from_dict
+            return cls.from_dict(metadata)
             
-            # Load characters
-            print("Loading characters...")
-            for char_data in metadata["characters"]:
-                print(f"Loading character: {char_data['name']}")
-                project.characters[char_data["name"]] = Character(
-                    name=char_data["name"],
-                    description=char_data["description"],
-                    reference_images=char_data["reference_images"],
-                    style_notes=char_data["style_notes"]
-                )
-            
-            # Load backgrounds
-            print("Loading backgrounds...")
-            for bg_data in metadata["backgrounds"]:
-                print(f"Loading background: {bg_data['name']}")
-                project.backgrounds[bg_data["name"]] = Background(
-                    name=bg_data["name"],
-                    description=bg_data["description"],
-                    reference_image=bg_data["reference_image"],
-                    style_notes=bg_data["style_notes"]
-                )
-            
-            # Load panels
-            print("Loading panels...")
-            for panel_data in metadata["panels"]:
-                print(f"Loading panel {panel_data['index'] + 1}")
-                panel = Panel(
-                    description=panel_data["description"],
-                    index=panel_data["index"],
-                    approved=panel_data["is_approved"],
-                    notes=panel_data["notes"]
-                )
-                
-                # Load variants
-                print(f"Loading {len(panel_data['variants'])} variants...")
-                for var_data in panel_data["variants"]:
-                    variant = PanelVariant(
-                        image_uri=var_data["image_uri"],
-                        generation_prompt=var_data["generation_prompt"],
-                        selected=var_data["is_selected"],
-                        feedback=var_data["feedback"]
-                    )
-                    panel.variants.append(variant)
-                    if var_data["is_selected"]:
-                        panel.selected_variant = variant
-                
-                # Load final variants
-                print(f"Loading {len(panel_data['final_variants'])} final variants...")
-                for var_data in panel_data["final_variants"]:
-                    variant = PanelVariant(
-                        image_uri=var_data["image_uri"],
-                        generation_prompt=var_data["generation_prompt"],
-                        selected=var_data["is_selected"],
-                        feedback=var_data["feedback"]
-                    )
-                    panel.final_variants.append(variant)
-                
-                project.panels.append(panel)
-            
-            print("Project loaded successfully")
-            return project
-            
+        except FileNotFoundError:
+            print(f"Error: metadata.json not found in {project_dir}")
+            raise
+        except json.JSONDecodeError:
+            print(f"Error: Could not parse metadata.json in {project_dir}")
+            raise
         except Exception as e:
-            print(f"Error loading project: {str(e)}")
+            print(f"Error loading project from {project_dir}: {str(e)}")
             print(f"Full traceback: {traceback.format_exc()}")
             raise
 
     @classmethod
     def from_dict(cls, data: dict) -> 'Project':
-        """Reconstruct a Project from a dictionary (parsed JSON from GCS)."""
+        """Reconstruct a Project from a dictionary (parsed JSON from GCS or local)."""
+        print("DEBUG: Project.from_dict called.")
         try:
             # Parse characters
             if isinstance(data.get("characters"), dict):
@@ -196,64 +127,61 @@ class Project:
             # Parse panels
             panels = []
             for panel_data in data.get("panels", []):
-                variants = [PanelVariant(**v) for v in panel_data.get("variants", [])]
-                final_variants = [PanelVariant(**v) for v in panel_data.get("final_variants", [])]
-                selected_variant = None
-                for v in variants:
-                    if getattr(v, "selected", False):
-                        selected_variant = v
-                        break
-                
-                # Handle script data, new and old format
+                print(f"DEBUG: from_dict - Processing panel_data for index {panel_data.get('index')}")
+                print(f"DEBUG: from_dict - panel_data raw official_final_image_uri: {panel_data.get('official_final_image_uri')}")
                 script_data = panel_data.get("script", {})
-                if not script_data and "description" in panel_data: # compatibility with old format
-                    script = PanelScript(
-                        visual_description=panel_data.get("description", ""),
-                        brief_description=script_data.get("brief_description", ""), # Will be empty for old format
-                        source_text=script_data.get("source_text", "") # Will be empty for old format
-                    )
-                else:
-                    script = PanelScript(
-                        visual_description=script_data.get("visual_description", panel_data.get("description","")),
-                        brief_description=script_data.get("brief_description", ""),
-                        source_text=script_data.get("source_text", ""),
-                        dialogue=script_data.get("dialogue", []),
-                        captions=script_data.get("captions", []),
-                        sfx=script_data.get("sfx", []),
-                        thoughts=script_data.get("thoughts", []),
-                        skip_enhancement=script_data.get("skip_enhancement", False)
-                    )
+                visual_desc_val = script_data.get("visual_description", panel_data.get("description"))
+                if not visual_desc_val: visual_desc_val = ""
+                script = PanelScript(
+                    visual_description=visual_desc_val,
+                    brief_description=script_data.get("brief_description", ""),
+                    source_text=script_data.get("source_text", ""),
+                    dialogue=script_data.get("dialogue", []),
+                    captions=script_data.get("captions", []),
+                    sfx=script_data.get("sfx", []),
+                    thoughts=script_data.get("thoughts", []),
+                    skip_enhancement=script_data.get("skip_enhancement", False)
+                )
+                variants_data = panel_data.get("variants", [])
+                variants = [PanelVariant(**v) for v in variants_data]
+                final_variants_data = panel_data.get("final_variants", [])
+                final_variants = [PanelVariant(**v) for v in final_variants_data]
+                selected_variant = None
+                for v_data_idx, v_data_item in enumerate(variants_data):
+                    if v_data_item.get("selected", False):
+                        if v_data_idx < len(variants):
+                             selected_variant = variants[v_data_idx]
+                        break
 
                 panel = Panel(
-                    # description field is deprecated from Panel, moved to PanelScript
                     index=panel_data["index"],
                     script=script,
                     variants=variants,
-                    selected_variant=selected_variant,
+                    selected_variant=selected_variant, 
                     final_variants=final_variants,
                     approved=panel_data.get("approved", panel_data.get("is_approved", False)),
-                    notes=panel_data.get("notes", "")
+                    notes=panel_data.get("notes", ""),
+                    official_final_image_uri=panel_data.get("official_final_image_uri")
                 )
+                print(f"DEBUG: from_dict - Created Panel object with official_final_image_uri: {panel.official_final_image_uri}")
                 panels.append(panel)
-            # Parse timestamps
-            created_at = data.get("created_at")
-            if isinstance(created_at, str):
-                created_at = datetime.fromisoformat(created_at)
-            updated_at = data.get("updated_at")
-            if isinstance(updated_at, str):
-                updated_at = datetime.fromisoformat(updated_at)
-            # Project dir (optional)
-            project_dir = data.get("project_dir")
-            if project_dir and not isinstance(project_dir, Path):
-                project_dir = Path(str(project_dir))
+            
+            created_at_str = data.get("created_at")
+            created_at = datetime.fromisoformat(created_at_str) if isinstance(created_at_str, str) else datetime.now()
+            updated_at_str = data.get("updated_at")
+            updated_at = datetime.fromisoformat(updated_at_str) if isinstance(updated_at_str, str) else datetime.now()
+            
+            project_dir_val = data.get("project_dir")
+            project_dir = Path(str(project_dir_val)) if project_dir_val else None
+
             return cls(
                 name=data["name"],
                 source_text=data.get("source_text", ""),
                 source_file=data.get("source_file", ""),
-                created_at=created_at or datetime.now(),
-                updated_at=updated_at or datetime.now(),
-                characters=characters,
-                backgrounds=backgrounds,
+                created_at=created_at,
+                updated_at=updated_at,
+                characters={name: Character(**char) for name, char in data.get("characters", {}).items()},
+                backgrounds={name: Background(**bg) for name, bg in data.get("backgrounds", {}).items()},
                 panels=panels,
                 status=data.get("status", "created"),
                 project_dir=project_dir
@@ -265,6 +193,7 @@ class Project:
 
     def to_dict(self) -> dict:
         """Convert project to a dictionary for serialization."""
+        print("DEBUG: Project.to_dict called.")
         result = {
             "name": self.name,
             "source_text": self.source_text,
@@ -277,71 +206,23 @@ class Project:
             "backgrounds": {},
             "panels": []
         }
-        
-        # Convert characters
-        for name, char in self.characters.items():
-            result["characters"][name] = {
-                "name": char.name,
-                "description": char.description,
-                "reference_images": char.reference_images,
-                "style_notes": getattr(char, "style_notes", "")
-            }
-        
-        # Convert backgrounds
-        for name, bg in self.backgrounds.items():
-            result["backgrounds"][name] = {
-                "name": bg.name,
-                "description": bg.description,
-                "reference_image": bg.reference_image,
-                "style_notes": getattr(bg, "style_notes", "")
-            }
-        
-        # Convert panels
-        for panel in self.panels:
+        for name, char_obj in self.characters.items(): # Renamed char to char_obj to avoid conflict
+            result["characters"][name] = asdict(char_obj)
+        for name, bg_obj in self.backgrounds.items(): # Renamed bg to bg_obj
+            result["backgrounds"][name] = asdict(bg_obj)
+
+        for panel_obj in self.panels: # Renamed panel to panel_obj
             panel_dict = {
-                "index": panel.index,
-                "approved": getattr(panel, "approved", False),
-                "notes": getattr(panel, "notes", ""),
-                "variants": [],
-                "final_variants": []
+                "index": panel_obj.index,
+                "script": asdict(panel_obj.script) if hasattr(panel_obj, 'script') and panel_obj.script else {},
+                "variants": [asdict(v) for v in panel_obj.variants],
+                "selected_variant": asdict(panel_obj.selected_variant) if panel_obj.selected_variant else None,
+                "final_variants": [asdict(v) for v in panel_obj.final_variants],
+                "official_final_image_uri": getattr(panel_obj, "official_final_image_uri", None),
+                "approved": getattr(panel_obj, "approved", False),
+                "notes": getattr(panel_obj, "notes", "")
             }
-            
-            # Handle panel description/script
-            if hasattr(panel, "description"):
-                panel_dict["description"] = panel.description
-            
-            if hasattr(panel, "script"):
-                panel_dict["script"] = {
-                    "visual_description": panel.script.visual_description,
-                    "brief_description": getattr(panel.script, "brief_description", ""),
-                    "source_text": getattr(panel.script, "source_text", ""),
-                    "dialogue": panel.script.dialogue if hasattr(panel.script, "dialogue") else [],
-                    "captions": panel.script.captions if hasattr(panel.script, "captions") else [],
-                    "sfx": panel.script.sfx if hasattr(panel.script, "sfx") else [],
-                    "thoughts": panel.script.thoughts if hasattr(panel.script, "thoughts") else [],
-                    "skip_enhancement": getattr(panel.script, "skip_enhancement", False)
-                }
-            
-            # Convert variants
-            for variant in getattr(panel, "variants", []):
-                variant_dict = {
-                    "image_uri": variant.image_uri,
-                    "generation_prompt": variant.generation_prompt,
-                    "selected": getattr(variant, "selected", False),
-                    "feedback": getattr(variant, "feedback", None)
-                }
-                panel_dict["variants"].append(variant_dict)
-            
-            # Convert final variants
-            for variant in getattr(panel, "final_variants", []):
-                variant_dict = {
-                    "image_uri": variant.image_uri,
-                    "generation_prompt": variant.generation_prompt,
-                    "selected": getattr(variant, "selected", False),
-                    "feedback": getattr(variant, "feedback", None)
-                }
-                panel_dict["final_variants"].append(variant_dict)
-            
+            print(f"DEBUG: to_dict - panel_dict for index {panel_obj.index} being added: official_final_image_uri='{panel_dict.get('official_final_image_uri')}'")
             result["panels"].append(panel_dict)
         
         return result 

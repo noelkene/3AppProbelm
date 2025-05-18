@@ -13,6 +13,7 @@ import os
 import base64
 from io import BytesIO
 import time
+import re
 
 class AIService:
     """Service for interacting with Google's AI models using google-genai SDK."""
@@ -55,26 +56,24 @@ class AIService:
             print(f"Error initializing AI service: {error_msg}")
             raise ValueError(f"Failed to initialize AI client: {error_msg}")
 
-    def _extract_character_names(self, panel_description: str) -> List[str]:
-        """Extract character names mentioned in the panel description."""
-        # Convert to lowercase for case-insensitive matching
+    def _extract_character_names(self, panel_description: str, known_character_names: List[str]) -> List[str]:
+        """Extract known character names mentioned in the panel description using whole word matching."""
+        mentioned_characters = []
         desc_lower = panel_description.lower()
         
-        # Common words to exclude
-        exclude_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'with', 'by', 'from'}
+        for char_name in known_character_names:
+            if not char_name or not char_name.strip(): # Skip empty or whitespace-only names
+                continue
+            try:
+                # Use regex for whole word, case-insensitive matching.
+                # re.escape handles any special regex characters in char_name.
+                pattern = r"\b" + re.escape(char_name.lower()) + r"\b"
+                if re.search(pattern, desc_lower):
+                    mentioned_characters.append(char_name) # Keep original casing
+            except re.error as e:
+                print(f"[AIService._extract_character_names] Regex error for character name '{char_name}': {e}. Skipping this name.")
         
-        # Split into words and clean
-        words = [word.strip('.,!?()[]{}":;') for word in desc_lower.split()]
-        words = [word for word in words if word and word not in exclude_words]
-        
-        # Look for character names (words that start with capital letters in the original text)
-        character_names = []
-        for word in panel_description.split():
-            clean_word = word.strip('.,!?()[]{}":;')
-            if clean_word and clean_word[0].isupper() and clean_word.lower() not in exclude_words:
-                character_names.append(clean_word)
-        
-        return list(set(character_names))  # Remove duplicates
+        return list(set(mentioned_characters))
 
     def generate_panel_descriptions(self,
                                   chapter_text: str,
@@ -293,7 +292,7 @@ class AIService:
 
     async def generate_panel_variants_async(self,
                                           panel_description: str,
-                                          character_references: List[Tuple[str, str]],
+                                          character_references: List[Dict[str, str]],
                                           background_references: List[Tuple[str, str]],
                                           num_variants: int,
                                           system_prompt: str,
@@ -303,31 +302,40 @@ class AIService:
         """Generate multiple variants of a panel image asynchronously."""
         current_request_parts = []
         max_retries = 3
-        retry_delay = 1  # seconds
+        retry_delay = 1
         
-        # Extract character names from the panel description
-        mentioned_characters = self._extract_character_names(panel_description)
-        print(f"Characters mentioned in panel: {mentioned_characters}")
+        known_character_names_from_refs = [ref['name'] for ref in character_references]
         
-        # Filter character references to only include mentioned characters
-        relevant_char_refs = [
-            (char_name, char_uri) for char_name, char_uri in character_references
-            if any(mentioned_char.lower() in char_name.lower() for mentioned_char in mentioned_characters)
-        ]
-        print(f"Relevant character references: {[name for name, _ in relevant_char_refs]}")
+        mentioned_characters = self._extract_character_names(panel_description, known_character_names_from_refs)
+        print(f"Panel description: {panel_description[:100]}...")
+        print(f"Known characters provided (structured): {[{'name': ref['name'], 'desc': ref['description'][:30]+'...'} for ref in character_references]}")
+        print(f"Characters identified in panel description: {mentioned_characters}")
         
-        # Add character references
-        for char_name, char_uri in relevant_char_refs:
+        relevant_char_refs_structured = []
+        if mentioned_characters:
+            for ref in character_references:
+                if ref['name'] in mentioned_characters:
+                    relevant_char_refs_structured.append(ref)
+        print(f"Relevant structured character references being sent to AI: {[{'name': ref['name'], 'desc': ref['description'][:30]+'...', 'uri': ref['uri']} for ref in relevant_char_refs_structured]}")
+        
+        for char_ref_data in relevant_char_refs_structured:
+            char_name = char_ref_data['name']
+            char_desc = char_ref_data['description']
+            char_uri = char_ref_data['uri']
+            
             char_context = (
-                f"IMPORTANT CONTEXT: A visual reference for the character '{char_name}' "
-                f"is provided below. If this character is part of the current panel description, "
-                f"adhere to this reference for their appearance. "
+                f"IMPORTANT CONTEXT FOR CHARACTER: '{char_name}'\n"
+                f"Description: {char_desc}\n"
+                f"A visual reference image for '{char_name}' is provided. "
+                f"If this character is part of the current panel description, "
+                f"adhere to this reference image and description for their appearance. "
                 f"This reference image is a guide; adapt it to the panel's specific action, emotion, and perspective."
             )
             current_request_parts.append(types.Part.from_text(text=char_context))
-            current_request_parts.append(types.Part.from_uri(file_uri=char_uri, mime_type="image/png"))
+            if char_uri and char_uri.strip(): # Ensure URI is not empty
+                current_request_parts.append(types.Part.from_uri(file_uri=char_uri, mime_type="image/png")) # Assuming PNG, might need to be flexible
         
-        # Add background references
+        # Add background references (still name, uri tuples)
         for bg_name, bg_uri in background_references:
             bg_context = (
                 f"IMPORTANT CONTEXT: A visual reference for the background '{bg_name}' "
@@ -438,26 +446,38 @@ class AIService:
     async def generate_final_variants_async(self,
                                           panel_description: str,
                                           selected_variant: Tuple[bytes, str],
-                                          character_references: List[Tuple[str, str]],
+                                          character_references: List[Dict[str, str]],
                                           background_references: List[Tuple[str, str]],
                                           num_variants: int,
+                                          system_prompt: str,
                                           temperature: float = 0.7,
                                           additional_instructions: str = "") -> List[Tuple[bytes, str]]:
         """Generate final variants of a panel image asynchronously."""
         current_request_parts = []
         max_retries = 3
-        retry_delay = 1  # seconds
+        retry_delay = 1
         
-        # Add character references
-        for char_name, char_uri in character_references:
+        # Process character references (now structured)
+        # No need to call _extract_character_names here again if we assume image_generator.py did the filtering.
+        # Or, if we want to be safe, we can re-filter. For now, assume image_generator.py sends relevant ones.
+        print(f"Final Gen - Received structured character references: {[{'name': ref['name'], 'desc': ref['description'][:30]+'...', 'uri': ref['uri']} for ref in character_references]}")
+
+        for char_ref_data in character_references: # Assumes these are already filtered to be relevant
+            char_name = char_ref_data['name']
+            char_desc = char_ref_data['description']
+            char_uri = char_ref_data['uri']
+            
             char_context = (
-                f"IMPORTANT CONTEXT: A visual reference for the character '{char_name}' "
-                f"is provided below. If this character is part of the current panel description, "
-                f"adhere to this reference for their appearance. "
+                f"IMPORTANT CONTEXT FOR CHARACTER: '{char_name}'\n"
+                f"Description: {char_desc}\n"
+                f"A visual reference image for '{char_name}' is provided. "
+                f"If this character is part of the current panel description, "
+                f"adhere to this reference image and description for their appearance. "
                 f"This reference image is a guide; adapt it to the panel's specific action, emotion, and perspective."
             )
             current_request_parts.append(types.Part.from_text(text=char_context))
-            current_request_parts.append(types.Part.from_uri(file_uri=char_uri, mime_type="image/png"))
+            if char_uri and char_uri.strip():
+                current_request_parts.append(types.Part.from_uri(file_uri=char_uri, mime_type="image/png"))
             
         # Add background references
         for bg_name, bg_uri in background_references:
@@ -479,9 +499,13 @@ class AIService:
         )))
         current_request_parts.append(types.Part.from_text(text=f"Reference Text: {selected_text}"))
         
-        # Add the panel description
+        # Add the main panel description for context
         current_request_parts.append(types.Part.from_text(text=panel_description))
         
+        # Add system prompt if provided and non-empty (optional integration point)
+        if system_prompt and system_prompt.strip():
+             current_request_parts.insert(0, types.Part.from_text(text=system_prompt)) # Prepend system prompt
+
         # Add additional instructions if provided
         if additional_instructions:
             current_request_parts.append(types.Part.from_text(text=f"\nAdditional Instructions:\n{additional_instructions}"))
@@ -843,7 +867,6 @@ class AIService:
                 return panels
             except json.JSONDecodeError:
                 # Try to extract JSON from the response if there's text before/after
-                import re
                 json_pattern = r'(\{[\s\S]*\})'
                 match = re.search(json_pattern, full_response)
                 
