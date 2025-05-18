@@ -32,5 +32,5 @@ RUN useradd -m -u 1000 streamlit
 RUN chown -R streamlit:streamlit /app
 USER streamlit
 
-# Command to run the application
-CMD streamlit run src/app.py --server.port $PORT --server.address 0.0.0.0
+# Command to run the project_setup.py application
+CMD streamlit run src/apps/project_setup.py --server.port $PORT --server.address 0.0.0.0
