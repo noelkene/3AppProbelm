@@ -37,4 +37,5 @@ USER streamlituser
 
 # Command to run the image_generator.py application
 # Using $PORT is important for Cloud Run
-CMD ["streamlit", "run", "src/apps/image_generator.py", "--server.port", "$PORT", "--server.headless", "true", "--server.address", "0.0.0.0"] 
+# Shell form allows $PORT expansion, and --server.headless true is good for Cloud Run.
+CMD streamlit run src/apps/image_generator.py --server.port $PORT --server.headless true --server.address 0.0.0.0 

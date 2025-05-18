@@ -1,0 +1,38 @@
+# Use Python 3.11 slim image (to match your local venv)
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies (if any are strictly needed for runtime or pip install)
+# For consistency, keeping build-essential and curl as in image_generator, 
+# but evaluate if they are truly needed for comic_preview dependencies.
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set environment variables for Python
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Copy requirements first to leverage Docker cache
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the application source code needed for comic_preview
+# This includes models, services, and the specific app file.
+COPY src/ src/
+
+# Expose the port Streamlit will run on
+EXPOSE 8080 
+
+# Create a non-root user and switch to it
+RUN useradd -m -s /bin/bash -u 1000 streamlituser
+USER streamlituser
+
+# Command to run the comic_preview.py application
+# Using $PORT is important for Cloud Run
+CMD ["streamlit", "run", "src/apps/comic_preview.py", "--server.port", "$PORT", "--server.headless", "true", "--server.address", "0.0.0.0"] 
