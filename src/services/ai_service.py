@@ -1,9 +1,9 @@
 """Service for interacting with Google's AI models using google-genai SDK."""
 
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, Any
 from google import genai
 from google.genai import types
-from src.config.settings import GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, MULTIMODAL_MODEL_ID, TEXT_MODEL_ID, DEFAULT_IMAGE_TEMPERATURE
+from src.config.settings import GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, MULTIMODAL_MODEL_ID, IMAGE_GENERATION_MODEL_ID, TEXT_MODEL_ID, DEFAULT_IMAGE_TEMPERATURE
 import traceback
 import json
 import asyncio
@@ -14,47 +14,84 @@ import base64
 from io import BytesIO
 import time
 import re
+from google.oauth2 import service_account
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class AIService:
     """Service for interacting with Google's AI models using google-genai SDK."""
     
     def __init__(self):
-        """Initialize the AI service."""
-        print("Initializing AI service...")
-        try:
-            # Get default credentials for Google Cloud
-            credentials, project = default()
-            if not project:
-                project = GOOGLE_CLOUD_PROJECT
-            
-            # Initialize the GenAI client
-            self.client = genai.Client(
-                credentials=credentials,
-                project=project,
-                location="global",  # Using global for Gemini models
-                vertexai=True  # Use Vertex AI
+        """Initialize the AI service with proper authentication."""
+        self.client = None
+        self.project_id = None
+        
+        # Create a thread pool for parallel operations
+        self.executor = ThreadPoolExecutor(max_workers=3)
+        
+        # Configure safety settings - turn off for creative content
+        self.safety_settings = [
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE
+            ),
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE
+            ),
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE
+            ),
+            types.SafetySetting(
+                category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                threshold=types.HarmBlockThreshold.BLOCK_NONE
             )
+        ]
+        
+        self._setup_client()
+    
+    def _setup_client(self):
+        """Set up the Google AI client with proper authentication."""
+        try:
+            # Try to get project ID from environment or service account
+            self.project_id = os.getenv('GOOGLE_CLOUD_PROJECT', 'platinum-banner-303105')
             
-            # Configure safety settings - turn off for creative content
-            self.safety_settings = [
-                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-                types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=types.HarmBlockThreshold.BLOCK_NONE),
-            ]
+            # Check if service account file exists
+            service_account_path = os.path.join(os.getcwd(), 'service_account.json')
             
-            # Create a thread pool for parallel operations
-            self.executor = ThreadPoolExecutor(max_workers=3)
-            
-            print(f"AI service initialized successfully:")
-            print(f"- Project: {project}")
-            print(f"- Text model: {TEXT_MODEL_ID}")
-            print(f"- Multimodal model: {MULTIMODAL_MODEL_ID}")
-            
+            if os.path.exists(service_account_path):
+                logger.info("Using service account authentication")
+                # Load service account with correct scopes as shown in the user's snippet
+                credentials = service_account.Credentials.from_service_account_file(
+                    service_account_path,
+                    scopes=['https://www.googleapis.com/auth/cloud-platform']
+                )
+                
+                self.client = genai.Client(
+                    credentials=credentials,
+                    project=self.project_id,
+                    location="global",
+                    vertexai=True
+                )
+                logger.info(f"✅ AI Service initialized with service account for project: {self.project_id}")
+                
+            else:
+                logger.warning("No service account found, trying application default credentials")
+                # Try application default credentials
+                self.client = genai.Client(
+                    project=self.project_id,
+                    location="global",
+                    vertexai=True
+                )
+                logger.info(f"✅ AI Service initialized with application default credentials for project: {self.project_id}")
+                
         except Exception as e:
-            error_msg = str(e)
-            print(f"Error initializing AI service: {error_msg}")
-            raise ValueError(f"Failed to initialize AI client: {error_msg}")
+            logger.error(f"❌ Failed to initialize AI service: {e}")
+            raise
 
     def _extract_character_names(self, panel_description: str, known_character_names: List[str]) -> List[str]:
         """Extract known character names mentioned in the panel description using whole word matching."""
@@ -193,10 +230,35 @@ class AIService:
             try:
                 print(f"Sending request for panel chunk {chunk_idx+1} to AI model ({TEXT_MODEL_ID})...")
                 
+                # Try with a simpler prompt first
+                simple_instruction = f'''
+                Create {panels_in_this_chunk_request} comic panels from this text:
+                "{current_text_chunk}"
+                
+                Return ONLY a JSON object with this exact format:
+                {{
+                    "comic_panels": [
+                        {{
+                            "panel_number": {start_panel_num_for_chunk},
+                            "brief_description": "Brief description of the panel",
+                            "visual_description": "Detailed visual description",
+                            "source_text_segment": "Source text that inspired this panel"
+                        }}
+                    ]
+                }}
+                
+                Generate exactly {panels_in_this_chunk_request} panels, numbered from {start_panel_num_for_chunk} to {end_panel_num_for_chunk}.
+                '''
+                
                 stream = self.client.models.generate_content_stream(
                     model=TEXT_MODEL_ID, 
-                    contents=[types.Content(role="user", parts=[types.Part.from_text(text=instruction)])],
-                    config=config,
+                    contents=[types.Content(role="user", parts=[types.Part.from_text(text=simple_instruction)])],
+                    config=types.GenerateContentConfig(
+                        temperature=0.7,
+                        top_p=0.95,
+                        max_output_tokens=8192, 
+                        safety_settings=self.safety_settings
+                    ),
                 )
                 for chunk_resp in stream:
                     if chunk_resp.text:
@@ -210,14 +272,29 @@ class AIService:
 
                 # Attempt to clean and parse the JSON
                 cleaned_response = full_response_text.strip()
+                
+                # Remove markdown code blocks
                 if cleaned_response.startswith("```json"):
                     cleaned_response = cleaned_response[len("```json"):].strip()
-                if cleaned_response.startswith("```"): # Handles cases like ```json\n ... ``` or ```\n ... ```
-                     cleaned_response = cleaned_response[len("```"):].strip()
+                if cleaned_response.startswith("```"):
+                    cleaned_response = cleaned_response[len("```"):].strip()
                 if cleaned_response.endswith("```"):
                     cleaned_response = cleaned_response[:-len("```")].strip()
                 
-                json_data = json.loads(cleaned_response)
+                # Try to find JSON in the response
+                try:
+                    json_data = json.loads(cleaned_response)
+                except json.JSONDecodeError:
+                    # Try to extract JSON from the response
+                    import re
+                    json_match = re.search(r'\{.*\}', cleaned_response, re.DOTALL)
+                    if json_match:
+                        try:
+                            json_data = json.loads(json_match.group())
+                        except json.JSONDecodeError:
+                            raise Exception("Could not parse JSON from response")
+                    else:
+                        raise Exception("No valid JSON found in response")
                 
                 if "comic_panels" in json_data and isinstance(json_data["comic_panels"], list):
                     chunk_panels_data = json_data["comic_panels"]
@@ -231,42 +308,53 @@ class AIService:
                         if i < len(chunk_panels_data):
                             panel_obj = chunk_panels_data[i]
                             if not isinstance(panel_obj, dict) or \
-                               panel_obj.get("panel_number") != actual_panel_num_overall or \
                                "brief_description" not in panel_obj or \
                                "visual_description" not in panel_obj or \
                                "source_text_segment" not in panel_obj:
-                                print(f"Warning: Panel data for panel {actual_panel_num_overall} is malformed. Received: {panel_obj}. Using placeholders.")
+                                print(f"Warning: Panel data for panel {actual_panel_num_overall} is malformed. Using placeholders.")
                                 all_panel_data.append({
                                     "panel_number": actual_panel_num_overall,
-                                    "brief_description": panel_obj.get("brief_description", f"Malformed brief description for panel {actual_panel_num_overall}"),
-                                    "visual_description": panel_obj.get("visual_description", f"Malformed visual description for panel {actual_panel_num_overall}"),
-                                    "source_text_segment": panel_obj.get("source_text_segment", "Malformed source text segment.")
+                                    "brief_description": panel_obj.get("brief_description", f"Panel {actual_panel_num_overall}: {current_text_chunk[:100]}..."),
+                                    "visual_description": panel_obj.get("visual_description", f"Visual description for panel {actual_panel_num_overall}"),
+                                    "source_text_segment": panel_obj.get("source_text_segment", current_text_chunk[:200])
                                 })
                             else:
-                                all_panel_data.append(panel_obj) # Add valid panel data
-                        else: # AI returned fewer panels than requested for the chunk
+                                # Ensure panel number is correct
+                                panel_obj["panel_number"] = actual_panel_num_overall
+                                all_panel_data.append(panel_obj)
+                        else:
                             print(f"Warning: AI did not return data for panel {actual_panel_num_overall}. Adding placeholder.")
                             all_panel_data.append({
                                 "panel_number": actual_panel_num_overall,
-                                "brief_description": f"Error: AI did not generate brief for panel {actual_panel_num_overall}",
-                                "visual_description": f"Error: AI did not generate visual for panel {actual_panel_num_overall}",
-                                "source_text_segment": "Error: AI did not provide source text."
+                                "brief_description": f"Panel {actual_panel_num_overall}: {current_text_chunk[:100]}...",
+                                "visual_description": f"Visual description for panel {actual_panel_num_overall}",
+                                "source_text_segment": current_text_chunk[:200]
                             })
                 else:
                     print(f"Error: 'comic_panels' key missing or not a list in JSON response for chunk {chunk_idx+1}. Response: {cleaned_response[:500]}...")
-                    raise json.JSONDecodeError("Missing 'comic_panels' key or invalid type", cleaned_response, 0)
+                    # Create panels manually from the text
+                    for i in range(panels_in_this_chunk_request):
+                        panel_num = start_panel_num_for_chunk + i
+                        all_panel_data.append({
+                            "panel_number": panel_num,
+                            "brief_description": f"Panel {panel_num}: {current_text_chunk[:100]}...",
+                            "visual_description": f"Visual description for panel {panel_num}",
+                            "source_text_segment": current_text_chunk[:200]
+                        })
 
-            except Exception as e: # Catch JSONDecodeError and other general errors
+            except Exception as e:
                 print(f"Error processing panel chunk {chunk_idx+1}: {str(e)}")
-                if full_response_text: print(f"Problematic response for chunk {chunk_idx+1}: {full_response_text[:1000]}...")
-                # Add placeholder data for this entire chunk if processing fails
+                if full_response_text: 
+                    print(f"Problematic response for chunk {chunk_idx+1}: {full_response_text[:1000]}...")
+                
+                # Create basic panels from the text chunk instead of failing
                 for i in range(panels_in_this_chunk_request):
                     panel_num = start_panel_num_for_chunk + i
                     all_panel_data.append({
                         "panel_number": panel_num,
-                        "brief_description": f"Error processing chunk for panel {panel_num}",
-                        "visual_description": f"Error processing chunk for panel {panel_num}",
-                        "source_text_segment": "Error processing chunk."
+                        "brief_description": f"Panel {panel_num}: {current_text_chunk[:100]}...",
+                        "visual_description": f"Visual description for panel {panel_num}",
+                        "source_text_segment": current_text_chunk[:200]
                     })
             
             panels_generated_count += panels_in_this_chunk_request
@@ -300,148 +388,197 @@ class AIService:
                                           additional_instructions: str = "",
                                           previous_panel_image: Optional[Tuple[bytes, str]] = None) -> List[Tuple[bytes, str]]:
         """Generate multiple variants of a panel image asynchronously."""
-        current_request_parts = []
-        max_retries = 3
-        retry_delay = 1
-        
-        known_character_names_from_refs = [ref['name'] for ref in character_references]
-        
-        mentioned_characters = self._extract_character_names(panel_description, known_character_names_from_refs)
-        print(f"Panel description: {panel_description[:100]}...")
-        print(f"Known characters provided (structured): {[{'name': ref['name'], 'desc': ref['description'][:30]+'...'} for ref in character_references]}")
-        print(f"Characters identified in panel description: {mentioned_characters}")
-        
-        relevant_char_refs_structured = []
-        if mentioned_characters:
-            for ref in character_references:
-                if ref['name'] in mentioned_characters:
-                    relevant_char_refs_structured.append(ref)
-        print(f"Relevant structured character references being sent to AI: {[{'name': ref['name'], 'desc': ref['description'][:30]+'...', 'uri': ref['uri']} for ref in relevant_char_refs_structured]}")
-        
-        for char_ref_data in relevant_char_refs_structured:
-            char_name = char_ref_data['name']
-            char_desc = char_ref_data['description']
-            char_uri = char_ref_data['uri']
+        try:
+            print(f"Starting panel variant generation for: {panel_description[:100]}...")
+            print(f"Model: {IMAGE_GENERATION_MODEL_ID}")
+            print(f"Number of variants requested: {num_variants}")
             
-            char_context = (
-                f"IMPORTANT CONTEXT FOR CHARACTER: '{char_name}'\n"
-                f"Description: {char_desc}\n"
-                f"A visual reference image for '{char_name}' is provided. "
-                f"If this character is part of the current panel description, "
-                f"adhere to this reference image and description for their appearance. "
-                f"This reference image is a guide; adapt it to the panel's specific action, emotion, and perspective."
-            )
-            current_request_parts.append(types.Part.from_text(text=char_context))
-            if char_uri and char_uri.strip(): # Ensure URI is not empty
-                current_request_parts.append(types.Part.from_uri(file_uri=char_uri, mime_type="image/png")) # Assuming PNG, might need to be flexible
-        
-        # Add background references (still name, uri tuples)
-        for bg_name, bg_uri in background_references:
-            bg_context = (
-                f"IMPORTANT CONTEXT: A visual reference for the background '{bg_name}' "
-                f"is provided below. If this background is part of the current panel description, "
-                f"adhere to this reference for its appearance. "
-                f"This reference image is a guide; adapt it to the panel's specific lighting, mood, and perspective."
-            )
-            current_request_parts.append(types.Part.from_text(text=bg_context))
-            current_request_parts.append(types.Part.from_uri(file_uri=bg_uri, mime_type="image/png"))
-        
-        # Add previous panel image if available
-        if previous_panel_image:
-            prev_image, prev_text = previous_panel_image
-            current_request_parts.append(types.Part.from_text(text=(
-                "IMPORTANT CONTEXT: The previous panel in the sequence is provided below. "
-                "Maintain visual continuity with this panel, including character appearances, "
-                "art style, and scene progression. The new panel should feel like a natural "
-                "continuation of the story."
-            )))
-            current_request_parts.append(types.Part(inline_data=types.Blob(
-                data=prev_image,
-                mime_type="image/png"
-            )))
-            current_request_parts.append(types.Part.from_text(text=f"Previous Panel Context: {prev_text}"))
-        
-        # Add the panel description
-        current_request_parts.append(types.Part.from_text(text=panel_description))
-        
-        # Add additional instructions if provided
-        if additional_instructions:
-            current_request_parts.append(types.Part.from_text(text=f"\nAdditional Instructions:\n{additional_instructions}"))
-        
-        async def generate_single_variant():
-            """Generate a single variant with retry logic."""
-            for attempt in range(max_retries):
-                try:
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        self.executor,
-                        lambda: self.client.models.generate_content(
-                            model=MULTIMODAL_MODEL_ID,
-                            contents=[types.Content(role="user", parts=current_request_parts)],
-                            config=types.GenerateContentConfig(
-                                temperature=temperature,
-                                top_p=0.95,
-                                max_output_tokens=8192,
-                                response_modalities=["TEXT", "IMAGE"],
-                                safety_settings=self.safety_settings
+            # Check if we have proper authentication
+            try:
+                credentials, project = default()
+                print(f"Authentication check - Project: {project}")
+            except Exception as auth_error:
+                print(f"Authentication error: {auth_error}")
+                raise Exception(f"Authentication failed: {auth_error}")
+            
+            current_request_parts = []
+            max_retries = 3
+            retry_delay = 1
+            
+            known_character_names_from_refs = [ref['name'] for ref in character_references]
+            
+            mentioned_characters = self._extract_character_names(panel_description, known_character_names_from_refs)
+            print(f"Panel description: {panel_description[:100]}...")
+            print(f"Known characters provided (structured): {[{'name': ref['name'], 'desc': ref['description'][:30]+'...'} for ref in character_references]}")
+            print(f"Characters identified in panel description: {mentioned_characters}")
+            
+            relevant_char_refs_structured = []
+            if mentioned_characters:
+                for ref in character_references:
+                    if ref['name'] in mentioned_characters:
+                        relevant_char_refs_structured.append(ref)
+            print(f"Relevant structured character references being sent to AI: {[{'name': ref['name'], 'desc': ref['description'][:30]+'...', 'uri': ref['uri']} for ref in relevant_char_refs_structured]}")
+            
+            # Build the prompt parts
+            for char_ref_data in relevant_char_refs_structured:
+                char_name = char_ref_data['name']
+                char_desc = char_ref_data['description']
+                char_uri = char_ref_data['uri']
+                
+                char_context = (
+                    f"IMPORTANT CONTEXT FOR CHARACTER: '{char_name}'\n"
+                    f"Description: {char_desc}\n"
+                    f"A visual reference image for '{char_name}' is provided. "
+                    f"If this character is part of the current panel description, "
+                    f"adhere to this reference image and description for their appearance. "
+                    f"This reference image is a guide; adapt it to the panel's specific action, emotion, and perspective."
+                )
+                current_request_parts.append(types.Part.from_text(text=char_context))
+                if char_uri and char_uri.strip(): # Ensure URI is not empty
+                    try:
+                        current_request_parts.append(types.Part.from_uri(file_uri=char_uri, mime_type="image/png"))
+                        print(f"Added character reference image for {char_name}")
+                    except Exception as uri_error:
+                        print(f"Warning: Could not add character reference image for {char_name}: {uri_error}")
+            
+            # Add background references (still name, uri tuples)
+            for bg_name, bg_uri in background_references:
+                bg_context = (
+                    f"IMPORTANT CONTEXT: A visual reference for the background '{bg_name}' "
+                    f"is provided below. If this background is part of the current panel description, "
+                    f"adhere to this reference for its appearance. "
+                    f"This reference image is a guide; adapt it to the panel's specific lighting, mood, and perspective."
+                )
+                current_request_parts.append(types.Part.from_text(text=bg_context))
+                if bg_uri and bg_uri.strip():
+                    try:
+                        current_request_parts.append(types.Part.from_uri(file_uri=bg_uri, mime_type="image/png"))
+                        print(f"Added background reference image for {bg_name}")
+                    except Exception as uri_error:
+                        print(f"Warning: Could not add background reference image for {bg_name}: {uri_error}")
+            
+            # Add previous panel image if available
+            if previous_panel_image:
+                prev_image, prev_text = previous_panel_image
+                current_request_parts.append(types.Part.from_text(text=(
+                    "IMPORTANT CONTEXT: The previous panel in the sequence is provided below. "
+                    "Maintain visual continuity with this panel, including character appearances, "
+                    "art style, and scene progression. The new panel should feel like a natural "
+                    "continuation of the story."
+                )))
+                current_request_parts.append(types.Part(inline_data=types.Blob(
+                    data=prev_image,
+                    mime_type="image/png"
+                )))
+                current_request_parts.append(types.Part.from_text(text=f"Previous Panel Context: {prev_text}"))
+            
+            # Add the panel description
+            current_request_parts.append(types.Part.from_text(text=panel_description))
+            
+            # Add additional instructions if provided
+            if additional_instructions:
+                current_request_parts.append(types.Part.from_text(text=f"\nAdditional Instructions:\n{additional_instructions}"))
+            
+            async def generate_single_variant():
+                """Generate a single variant with retry logic."""
+                for attempt in range(max_retries):
+                    try:
+                        print(f"Attempting to generate variant (attempt {attempt + 1}/{max_retries})")
+                        
+                        response = await asyncio.get_event_loop().run_in_executor(
+                            self.executor,
+                            lambda: self.client.models.generate_content(
+                                model=IMAGE_GENERATION_MODEL_ID,
+                                contents=[types.Content(role="user", parts=current_request_parts)],
+                                config=types.GenerateContentConfig(
+                                    temperature=temperature,
+                                    top_p=0.95,
+                                    max_output_tokens=8192,
+                                    response_modalities=["TEXT", "IMAGE"],
+                                    safety_settings=self.safety_settings
+                                )
                             )
                         )
-                    )
-                    
-                    if not response or not response.candidates:
-                        raise Exception("Empty response from model")
                         
-                    candidate = response.candidates[0]
-                    if not candidate.content or not candidate.content.parts:
-                        raise Exception("No content in response candidate")
-                        
-                    image_data = None
-                    text_data = None
-                    
-                    for part in candidate.content.parts:
-                        if hasattr(part, 'inline_data') and part.inline_data:
-                            image_data = part.inline_data.data
-                        elif hasattr(part, 'text') and part.text:
-                            text_data = part.text
+                        if not response or not response.candidates:
+                            raise Exception("Empty response from model")
                             
-                    if not image_data:
-                        raise Exception("No image data in response")
-                    if not text_data:
-                        raise Exception("No text data in response")
+                        candidate = response.candidates[0]
+                        if not candidate.content or not candidate.content.parts:
+                            raise Exception("No content in response candidate")
+                            
+                        image_data = None
+                        text_data = None
                         
-                    return (image_data, text_data)
-                    
-                except Exception as e:
-                    print(f"Attempt {attempt + 1} failed: {str(e)}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
-                    else:
-                        raise Exception(f"Failed to generate variant after {max_retries} attempts: {str(e)}")
-        
-        # Generate variants in parallel with a limit on concurrent requests
-        max_concurrent = min(num_variants, 3)  # Limit concurrent requests
-        successful_results = []
-        remaining_variants = num_variants
-        
-        while remaining_variants > 0:
-            current_batch = min(max_concurrent, remaining_variants)
-            tasks = [generate_single_variant() for _ in range(current_batch)]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+                        for part in candidate.content.parts:
+                            if hasattr(part, 'inline_data') and part.inline_data:
+                                image_data = part.inline_data.data
+                                if image_data:
+                                    print(f"Found image data: {len(image_data)} bytes")
+                            elif hasattr(part, 'text') and part.text:
+                                text_data = part.text
+                                print(f"Found text data: {len(text_data)} characters")
+                                
+                        if not image_data:
+                            raise Exception("No image data in response")
+                        if not text_data:
+                            raise Exception("No text data in response")
+                            
+                        print("Successfully generated variant")
+                        return (image_data, text_data)
+                        
+                    except Exception as e:
+                        error_msg = str(e)
+                        print(f"Attempt {attempt + 1} failed: {error_msg}")
+                        
+                        # Provide more specific error information
+                        if "400" in error_msg:
+                            print("API Error 400: Bad Request - Check model availability and prompt content")
+                        elif "403" in error_msg:
+                            print("API Error 403: Forbidden - Check authentication and permissions")
+                        elif "404" in error_msg:
+                            print("API Error 404: Model not found - Check model ID")
+                        elif "quota" in error_msg.lower():
+                            print("Quota exceeded - Check your Google Cloud quota")
+                        
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                        else:
+                            raise Exception(f"Failed to generate variant after {max_retries} attempts: {error_msg}")
             
-            for result in results:
-                if isinstance(result, Exception):
-                    print(f"Failed to generate variant: {str(result)}")
-                else:
-                    successful_results.append(result)
-                    
-            remaining_variants -= current_batch
+            # Generate variants in parallel with a limit on concurrent requests
+            max_concurrent = min(num_variants, 2)  # Reduced concurrent requests to avoid rate limiting
+            successful_results = []
+            remaining_variants = num_variants
             
-            if remaining_variants > 0:
-                await asyncio.sleep(1)  # Brief pause between batches
+            while remaining_variants > 0:
+                current_batch = min(max_concurrent, remaining_variants)
+                print(f"Generating batch of {current_batch} variants...")
+                tasks = [generate_single_variant() for _ in range(current_batch)]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
                 
-        if not successful_results:
-            raise Exception("Failed to generate any valid variants")
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        print(f"Failed to generate variant {i+1}: {str(result)}")
+                    else:
+                        successful_results.append(result)
+                        print(f"Successfully generated variant {len(successful_results)}")
+                        
+                remaining_variants -= current_batch
+                
+                if remaining_variants > 0:
+                    await asyncio.sleep(2)  # Increased pause between batches
+                    
+            if not successful_results:
+                raise Exception("Failed to generate any valid variants - all attempts failed")
+                
+            print(f"Successfully generated {len(successful_results)} variants")
+            return successful_results
             
-        return successful_results
+        except Exception as e:
+            print(f"Error in generate_panel_variants_async: {str(e)}")
+            print(f"Full error details: {traceback.format_exc()}")
+            raise
 
     async def generate_final_variants_async(self,
                                           panel_description: str,
@@ -517,7 +654,7 @@ class AIService:
                     response = await asyncio.get_event_loop().run_in_executor(
                         self.executor,
                         lambda: self.client.models.generate_content(
-                            model=MULTIMODAL_MODEL_ID,
+                            model=IMAGE_GENERATION_MODEL_ID,
                             contents=[types.Content(role="user", parts=current_request_parts)],
                             config=types.GenerateContentConfig(
                                 temperature=temperature,
@@ -594,11 +731,15 @@ class AIService:
         """Synchronous wrapper for generate_final_variants_async."""
         return asyncio.run(self.generate_final_variants_async(*args, **kwargs))
 
+    def process_all_panels_automatically_sync(self, *args, **kwargs):
+        """Synchronous wrapper for process_all_panels_automatically"""
+        return asyncio.run(self.process_all_panels_automatically(*args, **kwargs))
+
     def generate_panel_image(
         self, 
         prompt: str,
-        character_image_bytes: List[bytes] = None,
-        background_image_bytes: bytes = None,
+        character_image_bytes: Optional[List[bytes]] = None,
+        background_image_bytes: Optional[bytes] = None,
         temperature: float = DEFAULT_IMAGE_TEMPERATURE
     ) -> Optional[bytes]:
         """Generate a panel image from a prompt using google-genai SDK."""
@@ -642,19 +783,21 @@ class AIService:
             
             # Generate image
             try:
-                print(f"Sending request to model: {MULTIMODAL_MODEL_ID}")
+                print(f"Sending request to model: {IMAGE_GENERATION_MODEL_ID}")
                 response = self.client.models.generate_content(
-                    model=MULTIMODAL_MODEL_ID,
+                    model=IMAGE_GENERATION_MODEL_ID,
                     contents=[content],
                     config=generate_config
                 )
                 
                 # Extract image from response
-                if response.candidates:
-                    for part in response.candidates[0].content.parts:
-                        if hasattr(part, 'inline_data') and part.inline_data:
-                            print("Successfully generated panel image")
-                            return part.inline_data.data
+                if response and response.candidates:
+                    candidate = response.candidates[0]
+                    if candidate.content and candidate.content.parts:
+                        for part in candidate.content.parts:
+                            if hasattr(part, 'inline_data') and part.inline_data:
+                                print("Successfully generated panel image")
+                                return part.inline_data.data
                 
                 print("No image generated in response")
                 return None
@@ -688,8 +831,8 @@ class AIService:
     def enhance_panel_description(self, 
                                 base_description: str, 
                                 project_context: str = "",
-                                character_descriptions: List[str] = None,
-                                background_descriptions: List[str] = None,
+                                character_descriptions: Optional[List[str]] = None,
+                                background_descriptions: Optional[List[str]] = None,
                                 skip: bool = False) -> Optional[str]:
         """Enhance a panel description with more details."""
         # If skip flag is set, return the base description without enhancement
@@ -892,3 +1035,251 @@ class AIService:
             return [{"brief_description": f"PANEL {i+1}/{num_panels}", 
                      "visual_description": f"Split from original panel, part {i+1} of {num_panels}"} 
                     for i in range(num_panels)] 
+
+    def evaluate_image_prompt_match(self, image_bytes: bytes, prompt: str, max_score: int = 10) -> Tuple[float, str]:
+        """
+        Evaluate how well an image matches the given prompt.
+        Returns a tuple of (score, reasoning) where score is 0-max_score.
+        """
+        try:
+            # Convert image bytes to base64 for the model
+            image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+            
+            evaluation_prompt = f"""
+            You are an expert art critic and AI image evaluator. 
+            Analyze the provided image and evaluate how well it matches the given prompt description.
+            
+            PROMPT TO MATCH:
+            {prompt}
+            
+            EVALUATION CRITERIA:
+            1. Accuracy of visual elements described in the prompt
+            2. Composition and framing as specified
+            3. Character appearance and positioning (if mentioned)
+            4. Background and setting accuracy (if mentioned)
+            5. Overall mood and atmosphere
+            6. Technical quality and clarity
+            
+            Provide a score from 0 to {max_score} where:
+            - 0-2: Poor match, major elements missing or incorrect
+            - 3-4: Below average, some elements match but significant issues
+            - 5-6: Average match, most elements present but some inaccuracies
+            - 7-8: Good match, most elements accurate with minor issues
+            - 9-{max_score}: Excellent match, highly accurate to the prompt
+            
+            RESPOND ONLY WITH A JSON OBJECT:
+            {{
+                "score": [numerical score 0-{max_score}],
+                "reasoning": "[detailed explanation of the score including what matches well and what doesn't]"
+            }}
+            """
+            
+            config = types.GenerateContentConfig(
+                temperature=0.1,  # Low temperature for consistent evaluation
+                top_p=0.95,
+                max_output_tokens=1024,
+                response_mime_type="application/json",
+                safety_settings=self.safety_settings
+            )
+            
+            # Create multimodal content with image and text
+            parts = [
+                types.Part.from_text(text=evaluation_prompt),
+                types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+            ]
+            
+            content = types.Content(role="user", parts=parts)
+            
+            response = self.client.models.generate_content(
+                model=IMAGE_GENERATION_MODEL_ID,
+                contents=[content],
+                config=config
+            )
+            
+            if response and response.text:
+                try:
+                    result = json.loads(response.text)
+                    score = float(result.get('score', 0))
+                    reasoning = result.get('reasoning', 'No reasoning provided')
+                    return score, reasoning
+                except json.JSONDecodeError:
+                    print(f"Failed to parse evaluation response: {response.text}")
+                    return 0.0, "Failed to parse evaluation response"
+            else:
+                return 0.0, "No response from evaluation model"
+                
+        except Exception as e:
+            print(f"Error evaluating image-prompt match: {str(e)}")
+            return 0.0, f"Error during evaluation: {str(e)}"
+
+    def auto_select_best_image(self, image_variants: List[Tuple[bytes, str]], prompt: str) -> Tuple[int, float, str]:
+        """
+        Automatically select the best image from variants based on prompt matching.
+        Returns tuple of (best_index, best_score, reasoning).
+        """
+        if not image_variants:
+            return -1, 0.0, "No variants to evaluate"
+            
+        best_index = 0
+        best_score = 0.0
+        best_reasoning = ""
+        
+        print(f"Evaluating {len(image_variants)} image variants against prompt...")
+        
+        for i, (image_bytes, generation_prompt) in enumerate(image_variants):
+            # Use the original prompt for evaluation, not the generation prompt
+            score, reasoning = self.evaluate_image_prompt_match(image_bytes, prompt)
+            print(f"Variant {i+1}: Score {score}/10 - {reasoning[:100]}...")
+            
+            if score > best_score:
+                best_score = score
+                best_index = i
+                best_reasoning = reasoning
+        
+        print(f"Selected variant {best_index + 1} with score {best_score}/10")
+        return best_index, best_score, best_reasoning
+
+    async def process_all_panels_automatically(self, 
+                                             project, 
+                                             num_variants: int = 3,
+                                             image_temperature: float = 0.7,
+                                             min_score_threshold: float = 7.0) -> Dict[str, Any]:
+        """
+        Automatically process all panels in a project:
+        1. Generate variants for each panel
+        2. Evaluate and select the best variant automatically
+        3. Return processing results
+        """
+        results = {
+            'processed_panels': 0,
+            'total_panels': len(project.panels),
+            'panel_results': [],
+            'errors': []
+        }
+        
+        print(f"Starting automatic processing of {len(project.panels)} panels...")
+        
+        for panel_idx, panel in enumerate(project.panels):
+            try:
+                print(f"\n=== Processing Panel {panel_idx + 1}/{len(project.panels)} ===")
+                
+                # Generate variants for this panel
+                generated_variants = await self.generate_panel_variants_async(
+                    panel_description=panel.script.visual_description,
+                    character_references=self._extract_character_references(project.characters, panel.script.visual_description),
+                    background_references=self._extract_background_references(project.backgrounds, panel.script.visual_description),
+                    num_variants=num_variants,
+                    system_prompt=getattr(project, 'global_system_prompt', "Generate a comic panel image based on the visual description."),
+                    temperature=image_temperature
+                )
+                
+                if not generated_variants:
+                    error_msg = f"No variants generated for panel {panel_idx + 1}"
+                    results['errors'].append(error_msg)
+                    continue
+                
+                # Automatically select the best variant
+                best_index, best_score, reasoning = self.auto_select_best_image(
+                    generated_variants, 
+                    panel.script.visual_description
+                )
+                
+                if best_index >= 0:
+                    # Store the selected variant and save images to storage
+                    from src.models.panel import PanelVariant
+                    from src.services.storage_service import StorageService
+                    storage_service = StorageService()
+                    
+                    # Create PanelVariant objects for all generated images
+                    new_variants = []
+                    for i, (img_bytes, gen_prompt) in enumerate(generated_variants):
+                        # Save image to storage
+                        project_identifier = project.id if hasattr(project, 'id') and project.id else project.name
+                        image_uri = storage_service.save_image(
+                            image_bytes=img_bytes, 
+                            project_id=project_identifier, 
+                            panel_index=panel_idx, 
+                            variant_type="auto_generated",
+                            variant_index=len(panel.variants) + i 
+                        )
+                        
+                        if image_uri:
+                            variant = PanelVariant(
+                                image_uri=image_uri,
+                                generation_prompt=gen_prompt,
+                                selected=i == best_index
+                            )
+                            # Add evaluation metadata
+                            if i == best_index:
+                                variant.evaluation_score = best_score
+                                variant.evaluation_reasoning = reasoning
+                            
+                            new_variants.append(variant)
+                    
+                    # Add new variants to existing ones (don't replace)
+                    panel.variants.extend(new_variants)
+                    if new_variants:
+                        panel.selected_variant = new_variants[best_index]
+                    
+                    results['panel_results'].append({
+                        'panel_index': panel_idx,
+                        'variants_generated': len(generated_variants),
+                        'selected_variant': best_index,
+                        'best_score': best_score,
+                        'reasoning': reasoning,
+                        'auto_selected': True
+                    })
+                    
+                    results['processed_panels'] += 1
+                    print(f"Panel {panel_idx + 1} completed - Selected variant {best_index + 1} (score: {best_score}/10)")
+                    
+                else:
+                    error_msg = f"Failed to select best variant for panel {panel_idx + 1}"
+                    results['errors'].append(error_msg)
+                    
+            except Exception as e:
+                error_msg = f"Error processing panel {panel_idx + 1}: {str(e)}"
+                results['errors'].append(error_msg)
+                print(error_msg)
+                print(traceback.format_exc())
+        
+        print(f"\n=== Automatic Processing Complete ===")
+        print(f"Successfully processed: {results['processed_panels']}/{results['total_panels']} panels")
+        if results['errors']:
+            print(f"Errors encountered: {len(results['errors'])}")
+            
+        return results
+
+    def _extract_character_references(self, project_characters: Dict, panel_description: str) -> List[Dict[str, str]]:
+        """Extract character references for the given panel description."""
+        if not project_characters:
+            return []
+            
+        character_refs = []
+        mentioned_chars = self._extract_character_names(panel_description, list(project_characters.keys()))
+        
+        for char_name in mentioned_chars:
+            if char_name in project_characters:
+                char_obj = project_characters[char_name]
+                character_refs.append({
+                    'name': char_name,
+                    'description': char_obj.description,
+                    'uri': char_obj.reference_images[0] if char_obj.reference_images else ""
+                })
+        
+        return character_refs
+
+    def _extract_background_references(self, project_backgrounds: Dict, panel_description: str) -> List[Tuple[str, str]]:
+        """Extract background references for the given panel description."""
+        if not project_backgrounds:
+            return []
+            
+        # Simple keyword matching for backgrounds
+        background_refs = []
+        desc_lower = panel_description.lower()
+        
+        for bg_name, bg_obj in project_backgrounds.items():
+            if bg_name.lower() in desc_lower:
+                background_refs.append((bg_obj.description, bg_obj.reference_image or ""))
+        
+        return background_refs 

@@ -11,6 +11,8 @@ class PanelVariant:
     generation_prompt: str
     selected: bool = False
     feedback: Optional[str] = None
+    evaluation_score: Optional[float] = None  # AI evaluation score (0-10)
+    evaluation_reasoning: Optional[str] = None  # AI reasoning for the score
 
 @dataclass
 class PanelScript:

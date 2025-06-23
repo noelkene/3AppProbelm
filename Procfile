@@ -1,0 +1,1 @@
+web: streamlit run streamlit_cloud_deploy.py --server.port=$PORT --server.address=0.0.0.0 

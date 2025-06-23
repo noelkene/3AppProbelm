@@ -98,53 +98,107 @@ def render_sidebar():
             key="global_system_prompt_editor",
             help="This prompt is used as a base instruction for all image generations. It can be overridden per panel if needed (future feature)."
         )
+            
+        # Add Auto-Process All Panels button
+        st.markdown("***")
+        st.header("🚀 Automatic Processing")
+        if st.session_state.current_project and st.session_state.current_project.panels:
+            col1_auto, col2_auto = st.columns(2)
+            with col1_auto:
+                auto_variants = st.number_input("Variants per panel", min_value=2, max_value=5, value=3, key="auto_variants")
+            with col2_auto:
+                auto_temperature = st.slider("Image creativity", min_value=0.0, max_value=1.0, value=0.7, key="auto_temperature")
+            
+            if st.button("🎯 Auto-Process All Panels", type="primary", help="Automatically generate and select the best images for all panels"):
+                with st.spinner("Processing all panels automatically... This may take several minutes."):
+                    try:
+                        results = ai_service.process_all_panels_automatically_sync(
+                            project=st.session_state.current_project,
+                            num_variants=auto_variants,
+                            image_temperature=auto_temperature
+                        )
+                        
+                        # Save the updated project
+                        project_data_dict = st.session_state.current_project.to_dict()
+                        project_json_str = json.dumps(project_data_dict, indent=2, cls=ProjectJSONEncoder)
+                        project_json_bytes = project_json_str.encode('utf-8')
+                        project_identifier = st.session_state.current_project.id if hasattr(st.session_state.current_project, 'id') and st.session_state.current_project.id else st.session_state.current_project.name
+                        save_uri = storage_service.save_project_file(
+                            project_id=project_identifier,
+                            filename="metadata.json",
+                            content=project_json_bytes,
+                            content_type="application/json"
+                        )
+                        
+                        # Display results
+                        st.success(f"✅ Processed {results['processed_panels']}/{results['total_panels']} panels successfully!")
+                        
+                        # Show summary
+                        if results['panel_results']:
+                            st.subheader("📊 Processing Summary")
+                            for panel_result in results['panel_results']:
+                                st.write(f"**Panel {panel_result['panel_index'] + 1}**: Selected variant {panel_result['selected_variant'] + 1} (Score: {panel_result['best_score']:.1f}/10)")
+                        
+                        # Show errors if any
+                        if results['errors']:
+                            st.warning("⚠️ Some issues occurred:")
+                            for error in results['errors']:
+                                st.error(error)
+                        
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"Error during automatic processing: {str(e)}")
+        else:
+            st.info("Load a project with panels to use automatic processing.")
+
         st.markdown("***")
 
         if st.session_state.current_project:
-            project = st.session_state.current_project
-            st.header("🎨 Project Assets Overview")
-            if project.characters:
-                with st.expander("Characters", expanded=False):
-                    for char_name, char_obj in project.characters.items():
-                        st.subheader(f"{char_name}")
-                        st.caption(f"Description: {char_obj.description}")
-                        if char_obj.style_notes:
-                            st.caption(f"Style Notes: {char_obj.style_notes}")
-                        if char_obj.reference_images:
-                            st.caption("Reference Images:")
-                            for uri in char_obj.reference_images:
-                                st.code(uri, language=None)
-                                image_bytes = storage_service.get_image(uri)
+                project = st.session_state.current_project
+                st.header("🎨 Project Assets Overview")
+                if project.characters:
+                    with st.expander("Characters", expanded=False):
+                        for char_name, char_obj in project.characters.items():
+                            st.subheader(f"{char_name}")
+                            st.caption(f"Description: {char_obj.description}")
+                            if char_obj.style_notes:
+                                st.caption(f"Style Notes: {char_obj.style_notes}")
+                            if char_obj.reference_images:
+                                st.caption("Reference Images:")
+                                for uri in char_obj.reference_images:
+                                    st.code(uri, language=None)
+                                    image_bytes = storage_service.get_image(uri)
+                                    if image_bytes:
+                                        st.image(image_bytes, width=150)
+                                    else:
+                                        st.warning(f"Could not load image: {uri}")
+                            else:
+                                st.caption("No reference images.")
+                            st.markdown("---")
+                else:
+                    st.info("No characters defined in this project.")
+
+                if project.backgrounds:
+                    with st.expander("Backgrounds", expanded=False):
+                        for bg_name, bg_obj in project.backgrounds.items():
+                            st.subheader(f"{bg_name}")
+                            st.caption(f"Description: {bg_obj.description}")
+                            if bg_obj.style_notes:
+                                st.caption(f"Style Notes: {bg_obj.style_notes}")
+                            if bg_obj.reference_image:
+                                st.caption("Reference Image:")
+                                st.code(bg_obj.reference_image, language=None)
+                                image_bytes = storage_service.get_image(bg_obj.reference_image)
                                 if image_bytes:
                                     st.image(image_bytes, width=150)
                                 else:
-                                    st.warning(f"Could not load image: {uri}")
-                        else:
-                            st.caption("No reference images.")
-                        st.markdown("---")
-            else:
-                st.info("No characters defined in this project.")
-
-            if project.backgrounds:
-                with st.expander("Backgrounds", expanded=False):
-                    for bg_name, bg_obj in project.backgrounds.items():
-                        st.subheader(f"{bg_name}")
-                        st.caption(f"Description: {bg_obj.description}")
-                        if bg_obj.style_notes:
-                            st.caption(f"Style Notes: {bg_obj.style_notes}")
-                        if bg_obj.reference_image:
-                            st.caption("Reference Image:")
-                            st.code(bg_obj.reference_image, language=None)
-                            image_bytes = storage_service.get_image(bg_obj.reference_image)
-                            if image_bytes:
-                                st.image(image_bytes, width=150)
+                                    st.warning(f"Could not load image: {bg_obj.reference_image}")
                             else:
-                                st.warning(f"Could not load image: {bg_obj.reference_image}")
-                        else:
-                            st.caption("No reference image.")
-                        st.markdown("---")
-            else:
-                st.info("No backgrounds defined in this project.")
+                                st.caption("No reference image.")
+                            st.markdown("---")
+                else:
+                    st.info("No backgrounds defined in this project.")
 
 # Helper function to construct the initial combined prompt string
 def _build_initial_combined_prompt(panel_visual_desc, global_sys_prompt, project_chars, project_bgs, ai_service_instance) -> str:
@@ -415,6 +469,53 @@ def render_panel_generator():
     # Display variants
     if panel.variants:
         st.subheader("Image Variants")
+        
+        # Auto-select best variant button
+        if len(panel.variants) > 1:
+            if st.button("🎯 Auto-Select Best Variant", key=f"auto_select_{panel_idx}", help="Automatically evaluate and select the best matching variant"):
+                with st.spinner("Evaluating variants..."):
+                    try:
+                        # Get image bytes for all variants
+                        variant_images = []
+                        for variant in panel.variants:
+                            if variant.image_uri:
+                                image_bytes = storage_service.get_image(variant.image_uri)
+                                if image_bytes:
+                                    variant_images.append((image_bytes, variant.generation_prompt))
+                        
+                        if variant_images:
+                            best_index, best_score, reasoning = ai_service.auto_select_best_image(
+                                variant_images, 
+                                panel.script.visual_description
+                            )
+                            
+                            if best_index >= 0:
+                                panel.selected_variant = panel.variants[best_index]
+                                st.success(f"✅ Auto-selected variant {best_index + 1} (Score: {best_score:.1f}/10)")
+                                st.info(f"**Reasoning:** {reasoning}")
+                                
+                                # Save project
+                                try:
+                                    project_data_dict = project.to_dict()
+                                    project_json_str = json.dumps(project_data_dict, indent=2, cls=ProjectJSONEncoder)
+                                    project_json_bytes = project_json_str.encode('utf-8')
+                                    project_identifier = project.id if hasattr(project, 'id') and project.id else project.name
+                                    save_uri = storage_service.save_project_file(
+                                        project_id=project_identifier,
+                                        filename="metadata.json",
+                                        content=project_json_bytes,
+                                        content_type="application/json"
+                                    )
+                                    st.rerun()
+                                except Exception as e_save:
+                                    st.error(f"Error saving project: {str(e_save)}")
+                            else:
+                                st.error("Failed to auto-select best variant")
+                        else:
+                            st.error("No valid variant images found for evaluation")
+                    except Exception as e:
+                        st.error(f"Error during auto-selection: {str(e)}")
+        
         cols = st.columns(len(panel.variants))
         for i, variant in enumerate(panel.variants):
             with cols[i]:
@@ -422,6 +523,15 @@ def render_panel_generator():
                     image_bytes = storage_service.get_image(variant.image_uri)
                     if image_bytes:
                         st.image(image_bytes)
+                        
+                        # Show if this variant is selected
+                        if panel.selected_variant == variant:
+                            st.success("✅ Selected")
+                        
+                        # Show evaluation score if available
+                        if hasattr(variant, 'evaluation_score') and variant.evaluation_score is not None and variant.evaluation_score > 0:
+                            st.caption(f"Score: {variant.evaluation_score:.1f}/10")
+                        
                         if st.button(f"Select Variant {i + 1}", key=f"select_var_{panel_idx}_{i}"):
                             panel.selected_variant = variant
                             try:
@@ -583,8 +693,8 @@ def render_panel_generator():
                                 if final_image_uri:
                                     final_variant_obj = PanelVariant(
                                         image_uri=final_image_uri,
-                                        generation_prompt=final_generation_text if final_generation_text else edited_selected_variant_prompt,
-                                        selected=False # This 'selected' field is for initial variants, not the final choice
+                                        generation_prompt=base_desc_for_final_ai,
+                                        selected=False
                                     )
                                     newly_generated_final_variants.append(final_variant_obj)
                                 else:
@@ -683,9 +793,58 @@ def render_panel_generator():
                         st.info(f"Final variant option {i+1} has no image URI.")
 
 def main():
+    """Main application entry point."""
     initialize_session_state()
     render_sidebar()
-    render_panel_generator()
+    
+    if st.session_state.current_project:
+        # Auto-process panels if they haven't been processed yet
+        unprocessed_panels = [panel for panel in st.session_state.current_project.panels 
+                            if not panel.selected_variant]
+        
+        if unprocessed_panels:
+            st.info("🔄 Automatically processing panels...")
+            try:
+                results = ai_service.process_all_panels_automatically_sync(
+                    project=st.session_state.current_project,
+                    num_variants=3,  # Default to 3 variants
+                    image_temperature=0.7  # Default temperature
+                )
+                
+                # Save the updated project
+                project_data_dict = st.session_state.current_project.to_dict()
+                project_json_str = json.dumps(project_data_dict, indent=2, cls=ProjectJSONEncoder)
+                project_json_bytes = project_json_str.encode('utf-8')
+                project_identifier = st.session_state.current_project.id if hasattr(st.session_state.current_project, 'id') and st.session_state.current_project.id else st.session_state.current_project.name
+                save_uri = storage_service.save_project_file(
+                    project_id=project_identifier,
+                    filename="metadata.json",
+                    content=project_json_bytes,
+                    content_type="application/json"
+                )
+                
+                st.success(f"✅ Processed {results['processed_panels']}/{results['total_panels']} panels successfully!")
+                
+                # Show summary
+                if results['panel_results']:
+                    st.subheader("📊 Processing Summary")
+                    for panel_result in results['panel_results']:
+                        st.write(f"**Panel {panel_result['panel_index'] + 1}**: Selected variant {panel_result['selected_variant'] + 1} (Score: {panel_result['best_score']:.1f}/10)")
+                
+                # Show errors if any
+                if results['errors']:
+                    st.warning("⚠️ Some issues occurred:")
+                    for error in results['errors']:
+                        st.error(error)
+                
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"Error during automatic processing: {str(e)}")
+        
+        render_panel_generator()
+    else:
+        st.info("👈 Please select a project from the sidebar to begin.")
 
 if __name__ == "__main__":
     main() 

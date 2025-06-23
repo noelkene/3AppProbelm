@@ -54,8 +54,13 @@ else:
 # AI Model settings
 # Using models specified by the user
 # MULTIMODAL_MODEL_ID = "gemini-1.5-pro-latest"  # Example: Switched back by user's request
-MULTIMODAL_MODEL_ID = "gemini-2.0-flash-preview-image-generation" # User confirmed this is the intended model
-TEXT_MODEL_ID = "gemini-1.5-flash-preview-0514"  # For text generation
+IMAGE_GENERATION_MODEL_ID = "gemini-2.0-flash-preview-image-generation" # For image generation
+MULTIMODAL_MODEL_ID = "gemini-1.5-flash"  # For image evaluation and multimodal tasks
+TEXT_MODEL_ID = "gemini-2.5-flash"  # For text generation
+
+# Evaluation settings
+USE_HEURISTIC_EVALUATION = True  # Use heuristic evaluation instead of AI model
+EVALUATION_FALLBACK = True  # Fall back to heuristic if AI evaluation fails
 
 # Image Generation settings
 DEFAULT_IMAGE_TEMPERATURE = 0.7

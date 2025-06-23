@@ -4,11 +4,10 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (keep only if strictly needed by your python packages during install)
-# Consider a multi-stage build if some are only for building wheels
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
+    gcc \
+    g++ \
     # software-properties-common \
     # git \
     && rm -rf /var/lib/apt/lists/*
@@ -17,7 +16,7 @@ RUN apt-get update && apt-get install -y \
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 
-# Copy only necessary files for this specific app
+# Copy requirements first for better caching
 COPY requirements.txt .
 
 # Install Python dependencies
@@ -27,9 +26,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Assuming image_generator.py and its dependencies are in src/
 COPY src/ src/
 
+# Create necessary directories
+RUN mkdir -p data/projects data/characters data/backgrounds
+
 # Expose the port Streamlit will run on
 # Cloud Run provides the PORT env var, Streamlit uses $PORT by default.
-EXPOSE 8080 
+EXPOSE 8501
+
+# Set environment variables
+ENV PYTHONPATH=/app/src
 
 # Create a non-root user and switch to it
 RUN useradd -m -s /bin/bash -u 1000 streamlituser
@@ -38,4 +43,4 @@ USER streamlituser
 # Command to run the image_generator.py application
 # Using $PORT is important for Cloud Run
 # Shell form allows $PORT expansion, and --server.headless true is good for Cloud Run.
-CMD streamlit run src/apps/image_generator.py --server.port $PORT --server.headless true --server.address 0.0.0.0 
+CMD ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"] 
